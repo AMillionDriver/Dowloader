@@ -1,82 +1,248 @@
-import React, { useState } from 'react';
-import axios from 'axios';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import './App.css';
+import {
+  isDownloadCanceled,
+  parseDownloadError,
+  requestVideoDownload,
+} from './services/downloadService.js';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const PROGRESS = Object.freeze({
+  initialized: 15,
+  requesting: 55,
+  completed: 100,
+});
+
+const RESET_DELAY = 4000;
+
+const openDownloadUrl = (downloadUrl) => {
+  const downloadWindow = window.open(
+    downloadUrl,
+    '_blank',
+    'noopener,noreferrer'
+  );
+
+  if (!downloadWindow) {
+    window.location.assign(downloadUrl);
+  }
+};
 
 function App() {
-  const [url, setUrl] = useState('');
-  const [status, setStatus] = useState('');
+  const [videoUrl, setVideoUrl] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
   const [progress, setProgress] = useState(0);
-  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    try {
-      setStatus('Processing...');
-      setProgress(30);
-      setError('');
+  const abortControllerRef = useRef(null);
+  const resetTimeoutRef = useRef(null);
 
-      const response = await axios.post(`${API_BASE_URL}/api/download`, { url });
-      
-      setProgress(60);
-      
-      if (response.data.downloadUrl) {
-        setStatus('Downloading...');
-        setProgress(100);
-        
-        // Create a temporary anchor element to trigger the download
-        const link = document.createElement('a');
-        link.href = response.data.downloadUrl;
-        link.target = '_blank';
-        link.click();
-        
-        setStatus('Download started!');
-        setTimeout(() => {
-          setStatus('');
-          setProgress(0);
-        }, 3000);
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to download video');
-      setStatus('');
-      setProgress(0);
+  const isUrlEmpty = videoUrl.trim().length === 0;
+
+  const handleInputChange = useCallback((event) => {
+    setVideoUrl(event.target.value);
+    if (errorMessage) {
+      setErrorMessage('');
     }
-  };
+  }, [errorMessage]);
+
+  const clearResetTimeout = useCallback(() => {
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleReset = useCallback(() => {
+    clearResetTimeout();
+    resetTimeoutRef.current = window.setTimeout(() => {
+      setStatusMessage('');
+      setProgress(0);
+    }, RESET_DELAY);
+  }, [clearResetTimeout]);
+
+  const cleanupAbortController = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    cleanupAbortController();
+    clearResetTimeout();
+  }, [cleanupAbortController, clearResetTimeout]);
+
+  const validateUrl = useCallback((value) => {
+    const trimmedValue = value.trim();
+
+    if (!trimmedValue) {
+      throw new Error('URL tidak boleh kosong.');
+    }
+
+    try {
+      const parsedUrl = new URL(trimmedValue);
+      return parsedUrl.toString();
+    } catch (error) {
+      throw new Error('Silakan masukkan URL video yang valid.');
+    }
+  }, []);
+
+  const handleSubmit = useCallback(async (event) => {
+    event.preventDefault();
+
+    let normalizedUrl;
+    try {
+      normalizedUrl = validateUrl(videoUrl);
+    } catch (validationError) {
+      setErrorMessage(validationError.message);
+      return;
+    }
+
+    cleanupAbortController();
+    clearResetTimeout();
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setIsLoading(true);
+    setStatusMessage('Memulai permintaan unduhan...');
+    setProgress(PROGRESS.initialized);
+    setErrorMessage('');
+
+    try {
+      const downloadResponse = await requestVideoDownload(
+        normalizedUrl,
+        controller.signal
+      );
+
+      setStatusMessage('Tautan unduhan diterima. Menyiapkan unduhan...');
+      setProgress(PROGRESS.requesting);
+
+      if (!downloadResponse?.downloadUrl) {
+        throw new Error('Tautan unduhan tidak ditemukan pada respons.');
+      }
+
+      openDownloadUrl(downloadResponse.downloadUrl);
+
+      setStatusMessage('Unduhan dimulai. Selamat menikmati!');
+      setProgress(PROGRESS.completed);
+      scheduleReset();
+    } catch (error) {
+      if (isDownloadCanceled(error)) {
+        setStatusMessage('Permintaan unduhan dibatalkan.');
+      } else {
+        const friendlyMessage = parseDownloadError(error);
+        setErrorMessage(friendlyMessage);
+        setStatusMessage('');
+      }
+
+      setProgress(0);
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  }, [
+    videoUrl,
+    validateUrl,
+    cleanupAbortController,
+    clearResetTimeout,
+    scheduleReset,
+  ]);
+
+  const handleCancel = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setStatusMessage('Permintaan unduhan dibatalkan.');
+      setErrorMessage('');
+      setProgress(0);
+      setIsLoading(false);
+    }
+  }, []);
+
+  const isSubmitDisabled = useMemo(
+    () => isLoading || isUrlEmpty,
+    [isLoading, isUrlEmpty]
+  );
 
   return (
-    <div className="container">
-      <h1>Social Media Video Downloader</h1>
-      <p className="subtitle">Download videos from TikTok, Instagram, and Facebook</p>
-      
-      <form onSubmit={handleSubmit} className="download-form">
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste video URL here..."
-          required
-          className="url-input"
-        />
-        <button type="submit" className="download-button">
-          Download
-        </button>
-      </form>
+    <div className="page">
+      <main className="container" role="main">
+        <header className="header">
+          <h1>Social Media Video Downloader</h1>
+          <p className="subtitle">
+            Unduh video dari TikTok, Instagram, dan Facebook dengan aman dan cepat.
+          </p>
+        </header>
 
-      {status && (
-        <div className="status-container">
-          <div className="progress-bar">
-            <div 
-              className="progress-fill"
-              style={{ width: `${progress}%` }}
-            ></div>
+        <form onSubmit={handleSubmit} className="download-form" noValidate>
+          <label className="form-label" htmlFor="video-url">
+            Tautan video
+          </label>
+          <div className="input-group">
+            <input
+              id="video-url"
+              name="video-url"
+              type="url"
+              autoComplete="off"
+              value={videoUrl}
+              onChange={handleInputChange}
+              placeholder="Tempel tautan video di sini..."
+              className="url-input"
+              required
+              aria-describedby="url-help"
+              aria-invalid={Boolean(errorMessage)}
+              disabled={isLoading}
+            />
+            <button
+              type="submit"
+              className="download-button"
+              disabled={isSubmitDisabled}
+            >
+              {isLoading ? 'Memproses...' : 'Unduh'}
+            </button>
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={handleCancel}
+              disabled={!isLoading}
+            >
+              Batalkan
+            </button>
           </div>
-          <p className="status-text">{status}</p>
-        </div>
-      )}
+          <p id="url-help" className="help-text">
+            Pastikan tautan dapat diakses publik dan sesuai dengan syarat platform.
+          </p>
+        </form>
 
-      {error && <p className="error-message">{error}</p>}
+        {statusMessage && (
+          <section
+            className="status-container"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="progress-bar" aria-hidden="true">
+              <div
+                className="progress-fill"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <p className="status-text">{statusMessage}</p>
+          </section>
+        )}
+
+        {errorMessage && (
+          <p className="error-message" role="alert">
+            {errorMessage}
+          </p>
+        )}
+      </main>
     </div>
   );
 }
