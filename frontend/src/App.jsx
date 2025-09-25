@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
@@ -7,6 +7,18 @@ function App() {
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const apiClient = useMemo(() => {
+    const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+
+    return axios.create({
+      baseURL,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -15,31 +27,37 @@ function App() {
       setStatus('Processing...');
       setProgress(30);
       setError('');
+      setMessage('');
 
-      const response = await axios.post('http://localhost:5000/api/download', { url });
-      
+      const response = await apiClient.post('/api/download', { url });
+
       setProgress(60);
-      
+
       if (response.data.downloadUrl) {
         setStatus('Downloading...');
         setProgress(100);
-        
+
         // Create a temporary anchor element to trigger the download
         const link = document.createElement('a');
         link.href = response.data.downloadUrl;
         link.target = '_blank';
         link.click();
-        
+
         setStatus('Download started!');
+        if (response.data.message) {
+          setMessage(response.data.message);
+        }
         setTimeout(() => {
           setStatus('');
           setProgress(0);
+          setMessage('');
         }, 3000);
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to download video');
       setStatus('');
       setProgress(0);
+      setMessage('');
     }
   };
 
@@ -74,6 +92,7 @@ function App() {
         </div>
       )}
 
+      {message && <p className="info-message">{message}</p>}
       {error && <p className="error-message">{error}</p>}
     </div>
   );

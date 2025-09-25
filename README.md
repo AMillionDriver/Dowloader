@@ -42,12 +42,21 @@ video-downloader/
    npm install
    ```
 
-3. Start the development server:
+3. (Optional) Configure environment variables:
+   ```bash
+   # Port the backend should listen on (default: 5000)
+   export PORT=5000
+
+   # Origin that is allowed to access the API (default: http://localhost:5173)
+   export CLIENT_ORIGIN=http://localhost:5173
+   ```
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
-The backend server will run on http://localhost:5000
+The backend server will run on http://localhost:5000.
 
 ### Frontend
 
@@ -61,12 +70,17 @@ The backend server will run on http://localhost:5000
    npm install
    ```
 
-3. Start the development server:
+3. (Optional) Create a `.env` file in `frontend/` to configure the backend API URL:
+   ```bash
+   VITE_API_BASE_URL=http://localhost:5000
+   ```
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
-The frontend will run on http://localhost:3000
+The frontend will run on http://localhost:5173 by default when using Vite.
 
 ## Important Note
 
