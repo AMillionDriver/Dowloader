@@ -1,82 +1,49 @@
-import React, { useState } from 'react';
-import axios from 'axios';
 import './App.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+import DownloadForm from './components/DownloadForm';
+import StatusPanel from './components/StatusPanel';
+import { useVideoDownloader } from './hooks/useVideoDownloader';
 
 function App() {
-  const [url, setUrl] = useState('');
-  const [status, setStatus] = useState('');
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    try {
-      setStatus('Processing...');
-      setProgress(30);
-      setError('');
-
-      const response = await axios.post(`${API_BASE_URL}/api/download`, { url });
-      
-      setProgress(60);
-      
-      if (response.data.downloadUrl) {
-        setStatus('Downloading...');
-        setProgress(100);
-        
-        // Create a temporary anchor element to trigger the download
-        const link = document.createElement('a');
-        link.href = response.data.downloadUrl;
-        link.target = '_blank';
-        link.click();
-        
-        setStatus('Download started!');
-        setTimeout(() => {
-          setStatus('');
-          setProgress(0);
-        }, 3000);
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to download video');
-      setStatus('');
-      setProgress(0);
-    }
-  };
+  const {
+    error,
+    handleUrlChange,
+    isSubmitting,
+    isUrlValid,
+    status,
+    submitDownload,
+    videoUrl,
+  } = useVideoDownloader();
 
   return (
-    <div className="container">
-      <h1>Social Media Video Downloader</h1>
-      <p className="subtitle">Download videos from TikTok, Instagram, and Facebook</p>
-      
-      <form onSubmit={handleSubmit} className="download-form">
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste video URL here..."
-          required
-          className="url-input"
+    <div className="app-shell">
+      <header className="app-header">
+        <h1 className="app-title">Social Media Video Downloader</h1>
+        <p className="app-subtitle">
+          Securely download videos from TikTok, Instagram, and Facebook using a
+          single, easy-to-use interface.
+        </p>
+      </header>
+
+      <main className="app-main" role="main">
+        <DownloadForm
+          errorMessage={error}
+          isSubmitting={isSubmitting}
+          isUrlValid={isUrlValid}
+          onSubmit={submitDownload}
+          onUrlChange={handleUrlChange}
+          url={videoUrl}
         />
-        <button type="submit" className="download-button">
-          Download
-        </button>
-      </form>
 
-      {status && (
-        <div className="status-container">
-          <div className="progress-bar">
-            <div 
-              className="progress-fill"
-              style={{ width: `${progress}%` }}
-            ></div>
-          </div>
-          <p className="status-text">{status}</p>
-        </div>
-      )}
+        <StatusPanel progress={status.progress} status={status} />
+      </main>
 
-      {error && <p className="error-message">{error}</p>}
+      <footer className="app-footer">
+        <p>
+          Paste a public video URL and we&apos;ll do the rest. For the best
+          experience, ensure the link is publicly accessible.
+        </p>
+      </footer>
     </div>
   );
 }
