@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log*
+.pnpm-debug.log*
+frontend/dist
+backend/downloads
+backend/.env
+frontend/.env
+frontend/.env.local
+backend/.env.local

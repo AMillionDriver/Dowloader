@@ -62,6 +62,12 @@ h1 {
   background: #0056b3;
 }
 
+.download-button:disabled,
+.url-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .status-container {
   margin-top: 2rem;
 }
@@ -88,4 +94,27 @@ h1 {
 .error-message {
   color: #dc3545;
   margin-top: 1rem;
+}
+
+.info-message {
+  color: #0a7c3b;
+  margin-bottom: 1rem;
+}
+
+.download-meta {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #ffffff;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  text-align: left;
+}
+
+.meta-line {
+  color: #333;
+  margin-bottom: 0.5rem;
+}
+
+.meta-line strong {
+  color: #007bff;
 }

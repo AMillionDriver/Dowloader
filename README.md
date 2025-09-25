@@ -22,9 +22,13 @@ video-downloader/
 │   ├── package.json
 │   └── vite.config.js
 │
-└── backend/           # Node.js + Express backend
-    ├── server.js     # Express server setup
-    ├── utils.js      # Helper functions
+└── backend/           # Secure Node.js + Express backend
+    ├── src/
+    │   ├── server.js               # Express server setup
+    │   ├── routes/                 # API route definitions
+    │   ├── controllers/            # Request handlers
+    │   ├── services/               # Download & security services
+    │   └── utils/security.js       # Hashing / encryption helpers
     └── package.json
 ```
 
@@ -37,17 +41,31 @@ video-downloader/
    cd backend
    ```
 
-2. Install dependencies:
+2. Install dependencies (installs yt-dlp automatically):
    ```bash
    npm install
    ```
 
-3. Start the development server:
+3. (Optional) Set environment variables in `.env`:
+   ```bash
+   APP_SECRET=super-strong-secret
+   CLIENT_ORIGIN=http://localhost:3000
+   PUBLIC_BASE_URL=http://localhost:5000
+   ```
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
 The backend server will run on http://localhost:5000
+
+### Backend Security Features
+
+- `yt-dlp` integration ensures TikTok, Instagram, and Facebook videos are actually downloaded server-side.
+- Each client must obtain a cryptographically signed session via `/api/security/handshake` before accessing download endpoints.
+- Downloaded files are encrypted at rest and exposed through short-lived, HMAC-signed URLs, preventing tampering.
+- Security middleware (Helmet, HPP, rate limiting, strict CORS) hardens the API.
 
 ### Frontend
 
@@ -61,7 +79,12 @@ The backend server will run on http://localhost:5000
    npm install
    ```
 
-3. Start the development server:
+3. Optionally configure the backend URL:
+   ```bash
+   echo "VITE_API_BASE_URL=http://localhost:5000" > .env.local
+   ```
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
@@ -70,7 +93,7 @@ The frontend will run on http://localhost:3000
 
 ## Important Note
 
-The video extraction functions in `backend/utils.js` are currently placeholder implementations. You'll need to implement proper video extraction logic using appropriate APIs or third-party services for each platform (TikTok, Instagram, and Facebook).
+The backend downloads media through the bundled `yt-dlp` binary. Make sure the host machine can reach the social platforms so that `yt-dlp` can resolve the video streams successfully.
 
 ## Optional: Adding MongoDB
 
