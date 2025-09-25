@@ -89,3 +89,30 @@ h1 {
   color: #dc3545;
   margin-top: 1rem;
 }
+
+.integrity-card {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.12);
+  text-align: left;
+  word-break: break-all;
+}
+
+.integrity-card h2 {
+  font-size: 1.25rem;
+  margin-bottom: 1rem;
+  color: #0f172a;
+}
+
+.integrity-card p {
+  margin-bottom: 0.5rem;
+  color: #1e293b;
+}
+
+.integrity-helper {
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: #475569;
+}

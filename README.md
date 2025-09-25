@@ -1,6 +1,6 @@
 # Social Media Video Downloader
 
-A fullstack web application for downloading videos from TikTok, Instagram, and Facebook.
+A fullstack web application for downloading videos from TikTok, Instagram, and Facebook with a hardened, hashed, and integrity-checked pipeline.
 
 ## Features
 
@@ -42,12 +42,17 @@ video-downloader/
    npm install
    ```
 
-3. Start the development server:
+3. Copy the environment template and configure a strong secret (minimum 16 characters):
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
-The backend server will run on http://localhost:5000
+The backend server will run on http://localhost:5000 by default. You can adjust the `PORT` and allowed `CORS_ORIGINS` inside `.env`.
 
 ### Frontend
 
@@ -61,28 +66,30 @@ The backend server will run on http://localhost:5000
    npm install
    ```
 
-3. Start the development server:
+3. (Optional) Configure the backend API base URL:
+   ```bash
+   cp .env.example .env
+   ```
+   Update `VITE_API_BASE_URL` if your backend runs on a different host or port.
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
-The frontend will run on http://localhost:3000
+The frontend will run on http://localhost:3000.
 
-## Important Note
+## Security Hardening
 
-The video extraction functions in `backend/utils.js` are currently placeholder implementations. You'll need to implement proper video extraction logic using appropriate APIs or third-party services for each platform (TikTok, Instagram, and Facebook).
+- Strict domain validation ensures only TikTok, Instagram, or Facebook URLs are processed.
+- Every request must include a SHA-256 fingerprint of the submitted URL. The backend recomputes the hash to detect tampering.
+- Download URLs are signed with an HMAC integrity token using a configurable secret stored only on the server.
+- Responses expose hashed identifiers so clients can verify downloads and audit their activity.
+- Helmet, CORS, logging, and request rate limiting harden the API surface.
 
-## Optional: Adding MongoDB
+## Downloader Engine
 
-To add MongoDB support for storing download history:
-
-1. Install additional dependencies in the backend:
-   ```bash
-   npm install mongoose
-   ```
-
-2. Create a `models` directory in the backend and add your schema
-3. Update the download endpoint to store download history
+The backend integrates [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) through the `yt-dlp-exec` wrapper to extract secure, temporary stream URLs without storing any media on the server. This supports TikTok, Instagram, and Facebook out of the box.
 
 ## License
 
