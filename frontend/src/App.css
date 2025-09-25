@@ -85,6 +85,12 @@ h1 {
   color: #666;
 }
 
+.platform-text {
+  margin-top: 0.5rem;
+  color: #333;
+  font-weight: 500;
+}
+
 .error-message {
   color: #dc3545;
   margin-top: 1rem;

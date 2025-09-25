@@ -1,43 +1,54 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import axios from 'axios';
 import './App.css';
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 function App() {
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
+  const [platformLabel, setPlatformLabel] = useState('');
+
+  const endpoint = useMemo(() => {
+    if (API_BASE_URL) {
+      return `${API_BASE_URL}/api/download`;
+    }
+
+    return '/api/download';
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    try {
-      setStatus('Processing...');
-      setProgress(30);
-      setError('');
 
-      const response = await axios.post('http://localhost:5000/api/download', { url });
-      
+    try {
+      setStatus('Memproses tautan...');
+      setProgress(25);
+      setError('');
+      setPlatformLabel('');
+
+      const response = await axios.post(endpoint, { url });
+
       setProgress(60);
-      
+
       if (response.data.downloadUrl) {
-        setStatus('Downloading...');
+        setStatus('Mengunduh video...');
         setProgress(100);
-        
-        // Create a temporary anchor element to trigger the download
+        setPlatformLabel(response.data.platformLabel ?? '');
+
         const link = document.createElement('a');
         link.href = response.data.downloadUrl;
         link.target = '_blank';
+        link.rel = 'noreferrer';
         link.click();
-        
-        setStatus('Download started!');
-        setTimeout(() => {
-          setStatus('');
-          setProgress(0);
-        }, 3000);
+
+        setStatus('Unduhan dimulai!');
+      } else {
+        setStatus('Tidak menemukan tautan unduhan.');
       }
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to download video');
+      setError(err.response?.data?.error || 'Gagal mengunduh video.');
       setStatus('');
       setProgress(0);
     }
@@ -47,7 +58,7 @@ function App() {
     <div className="container">
       <h1>Social Media Video Downloader</h1>
       <p className="subtitle">Download videos from TikTok, Instagram, and Facebook</p>
-      
+
       <form onSubmit={handleSubmit} className="download-form">
         <input
           type="url"
@@ -65,12 +76,15 @@ function App() {
       {status && (
         <div className="status-container">
           <div className="progress-bar">
-            <div 
+            <div
               className="progress-fill"
               style={{ width: `${progress}%` }}
             ></div>
           </div>
           <p className="status-text">{status}</p>
+          {platformLabel && (
+            <p className="platform-text">Platform terdeteksi: {platformLabel}</p>
+          )}
         </div>
       )}
 

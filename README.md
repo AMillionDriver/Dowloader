@@ -23,9 +23,10 @@ video-downloader/
 │   └── vite.config.js
 │
 └── backend/           # Node.js + Express backend
-    ├── server.js     # Express server setup
-    ├── utils.js      # Helper functions
-    └── package.json
+    ├── server.js     # Express server setup & routing
+    ├── utils.js      # Helper functions for URL validation
+    ├── package.json
+    └── package-lock.json
 ```
 
 ## Setup and Installation
@@ -47,7 +48,8 @@ video-downloader/
    npm run dev
    ```
 
-The backend server will run on http://localhost:5000
+The backend server will run on http://localhost:5000. A `/health` endpoint is
+available for quick status checks.
 
 ### Frontend
 
@@ -66,7 +68,20 @@ The backend server will run on http://localhost:5000
    npm run dev
    ```
 
-The frontend will run on http://localhost:3000
+The frontend will run on http://localhost:3000. During development the Vite
+proxy forwards `/api` requests to the backend automatically.
+
+### Environment Variables
+
+For deployments where the frontend is hosted separately from the backend, set
+the API base URL via an environment variable in `frontend/.env`:
+
+```
+VITE_API_BASE_URL=https://your-backend-domain.com
+```
+
+If the variable is omitted the frontend will fall back to relative `/api`
+requests, which works with the built-in development proxy.
 
 ## Important Note
 
