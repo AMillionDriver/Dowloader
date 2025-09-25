@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+
 function App() {
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState('');
@@ -16,7 +18,7 @@ function App() {
       setProgress(30);
       setError('');
 
-      const response = await axios.post('http://localhost:5000/api/download', { url });
+      const response = await axios.post(`${API_BASE_URL}/api/download`, { url });
       
       setProgress(60);
       

@@ -13,7 +13,7 @@ A fullstack web application for downloading videos from TikTok, Instagram, and F
 
 ```
 video-downloader/
-├── frontend/           # React.js frontend
+├── frontend/           # React.js frontend (Vite)
 │   ├── src/
 │   │   ├── App.jsx    # Main application component
 │   │   ├── App.css    # Styles
@@ -25,21 +25,24 @@ video-downloader/
 └── backend/           # Node.js + Express backend
     ├── server.js     # Express server setup
     ├── utils.js      # Helper functions
-    └── package.json
+    ├── package.json
+    └── .env.example  # Environment variable template
 ```
 
 ## Setup and Installation
 
 ### Backend
 
-1. Navigate to the backend directory:
+1. Navigate to the backend directory and install dependencies:
    ```bash
    cd backend
+   npm install
    ```
 
-2. Install dependencies:
+2. Copy the environment template and update values as needed:
    ```bash
-   npm install
+   cp .env.example .env
+   # (optional) edit .env to set PORT or CLIENT_ORIGIN
    ```
 
 3. Start the development server:
@@ -47,18 +50,19 @@ video-downloader/
    npm run dev
    ```
 
-The backend server will run on http://localhost:5000
+The backend server will run on the configured `PORT` (defaults to `5000`).
 
 ### Frontend
 
-1. Navigate to the frontend directory:
+1. Navigate to the frontend directory and install dependencies:
    ```bash
    cd frontend
+   npm install
    ```
 
-2. Install dependencies:
+2. (Optional) Copy the provided environment example and adjust if necessary:
    ```bash
-   npm install
+   cp .env.example .env
    ```
 
 3. Start the development server:
@@ -66,7 +70,7 @@ The backend server will run on http://localhost:5000
    npm run dev
    ```
 
-The frontend will run on http://localhost:3000
+By default Vite serves the frontend on http://localhost:5173. Ensure the backend's `CLIENT_ORIGIN` matches this value.
 
 ## Important Note
 
