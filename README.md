@@ -2,6 +2,8 @@
 
 A fullstack web application for downloading videos from TikTok, Instagram, and Facebook.
 
+The upgraded backend now generates encrypted, hashed download URLs backed by `yt-dlp` so the downloader really works against the vast majority of public video links supported by yt-dlp. Each generated URL is short-lived and signed with AES-256-GCM + HMAC-SHA256 to keep both the frontend and backend interactions hardened.
+
 ## Features
 
 - Support for TikTok, Instagram, and Facebook videos
@@ -23,8 +25,12 @@ video-downloader/
 │   └── vite.config.js
 │
 └── backend/           # Node.js + Express backend
-    ├── server.js     # Express server setup
-    ├── utils.js      # Helper functions
+    ├── src/
+    │   ├── server.js            # Express server setup & security middleware
+    │   ├── controllers/         # Business logic for encrypted downloads
+    │   ├── utils/               # yt-dlp integration & crypto helpers
+    │   └── middleware/          # Error handling & guards
+    ├── .env.example             # Example environment configuration
     └── package.json
 ```
 
@@ -38,16 +44,29 @@ video-downloader/
    ```
 
 2. Install dependencies:
+    ```bash
+    npm install
+    ```
+
+3. Copy the environment file and adjust secrets as needed:
    ```bash
-   npm install
+   cp .env.example .env
+   # edit .env to update DOWNLOAD_TOKEN_SECRET, PUBLIC_BASE_URL, dll.
    ```
 
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
+4. Start the development server:
+    ```bash
+    npm run dev
+    ```
 
 The backend server will run on http://localhost:5000
+
+### Keamanan backend
+
+- Set `DOWNLOAD_TOKEN_SECRET` ke nilai rahasia minimal 32 karakter untuk menghasilkan token HMAC yang kuat.
+- `DOWNLOAD_TOKEN_TTL` mengontrol durasi (dalam milidetik) tautan unduhan terenkripsi sebelum kadaluarsa (default 5 menit).
+- `PUBLIC_BASE_URL` harus menunjuk ke domain backend Anda jika frontend disajikan dari host lain.
+- Semua endpoint dilindungi helmet, rate limiting, dan token terenkripsi, sehingga URL asli tidak pernah diekspos langsung ke browser.
 
 ### Frontend
 
@@ -68,9 +87,14 @@ The backend server will run on http://localhost:5000
 
 The frontend will run on http://localhost:3000
 
-## Important Note
+#### Konfigurasi keamanan frontend
 
-The video extraction functions in `backend/utils.js` are currently placeholder implementations. You'll need to implement proper video extraction logic using appropriate APIs or third-party services for each platform (TikTok, Instagram, and Facebook).
+- Buat file `.env` di direktori `frontend` (atau gunakan variabel environment) dan set `VITE_API_BASE_URL` ke URL backend (`http://localhost:5000` saat pengembangan).
+- Frontend hanya menerima URL valid dan menampilkan metadata video yang diambil secara aman dari backend.
+
+## Teknologi downloader
+
+Download video kini ditangani langsung oleh backend melalui `yt-dlp`, sehingga mendukung puluhan platform populer termasuk TikTok, Instagram, dan Facebook tanpa perlu menulis parser manual.
 
 ## Optional: Adding MongoDB
 
