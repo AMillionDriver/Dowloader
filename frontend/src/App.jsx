@@ -1,82 +1,96 @@
-import React, { useState } from 'react';
-import axios from 'axios';
+import React, { useEffect, useRef } from 'react';
 import './App.css';
+import { useVideoDownloader } from './hooks/useVideoDownloader';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const STATUS_COPY = {
+  idle: 'Paste a link to get started.',
+  processing: 'Preparing your download…',
+  downloading: 'Starting your download…',
+  success: 'Your download should start automatically.',
+  error: 'Failed to download the video.',
+};
 
 function App() {
-  const [url, setUrl] = useState('');
-  const [status, setStatus] = useState('');
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState('');
+  const {
+    url,
+    setUrl,
+    status,
+    progress,
+    message,
+    downloadLink,
+    isBusy,
+    startDownload,
+  } = useVideoDownloader();
+  const downloadAnchorRef = useRef(null);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    try {
-      setStatus('Processing...');
-      setProgress(30);
-      setError('');
-
-      const response = await axios.post(`${API_BASE_URL}/api/download`, { url });
-      
-      setProgress(60);
-      
-      if (response.data.downloadUrl) {
-        setStatus('Downloading...');
-        setProgress(100);
-        
-        // Create a temporary anchor element to trigger the download
-        const link = document.createElement('a');
-        link.href = response.data.downloadUrl;
-        link.target = '_blank';
-        link.click();
-        
-        setStatus('Download started!');
-        setTimeout(() => {
-          setStatus('');
-          setProgress(0);
-        }, 3000);
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to download video');
-      setStatus('');
-      setProgress(0);
+  useEffect(() => {
+    if (status === 'success' && downloadLink && downloadAnchorRef.current) {
+      downloadAnchorRef.current.href = downloadLink;
+      downloadAnchorRef.current.click();
     }
-  };
+  }, [downloadLink, status]);
 
   return (
-    <div className="container">
-      <h1>Social Media Video Downloader</h1>
-      <p className="subtitle">Download videos from TikTok, Instagram, and Facebook</p>
-      
-      <form onSubmit={handleSubmit} className="download-form">
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste video URL here..."
-          required
-          className="url-input"
-        />
-        <button type="submit" className="download-button">
-          Download
-        </button>
-      </form>
+    <div className="app">
+      <header className="hero">
+        <h1 className="hero__title">Social Media Video Downloader</h1>
+        <p className="hero__subtitle">
+          Save videos from TikTok, Instagram, and Facebook quickly and safely.
+        </p>
+      </header>
 
-      {status && (
-        <div className="status-container">
-          <div className="progress-bar">
-            <div 
-              className="progress-fill"
-              style={{ width: `${progress}%` }}
-            ></div>
+      <main className="content">
+        <form className="download-form" onSubmit={startDownload} noValidate>
+          <label className="sr-only" htmlFor="video-url">
+            Video URL
+          </label>
+          <input
+            id="video-url"
+            type="url"
+            name="videoUrl"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://example.com/video"
+            inputMode="url"
+            autoComplete="off"
+            required
+            pattern="https?://.+"
+            title="Enter a valid URL starting with http:// or https://"
+            className="url-input"
+            aria-describedby="status-message"
+            aria-invalid={status === 'error'}
+            disabled={isBusy}
+          />
+          <button type="submit" className="download-button" disabled={isBusy}>
+            {isBusy ? 'Processing…' : 'Download'}
+          </button>
+        </form>
+
+        <section className="feedback" aria-live="polite" id="status-message">
+          <div
+            className="progress-bar"
+            role="progressbar"
+            aria-valuenow={progress}
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <span className="progress-fill" style={{ width: `${progress}%` }} />
           </div>
-          <p className="status-text">{status}</p>
-        </div>
-      )}
+          <p className={`message message--${status}`}>
+            {message || STATUS_COPY[status]}
+          </p>
+        </section>
 
-      {error && <p className="error-message">{error}</p>}
+        <a
+          ref={downloadAnchorRef}
+          href={downloadLink || '#'}
+          className="sr-only"
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          Download link
+        </a>
+      </main>
     </div>
   );
 }
