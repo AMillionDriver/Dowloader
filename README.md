@@ -4,28 +4,30 @@ A fullstack web application for downloading videos from TikTok, Instagram, and F
 
 ## Features
 
-- Support for TikTok, Instagram, and Facebook videos
-- Simple and clean user interface
-- Progress tracking for downloads
-- Error handling and validation
+- Support for TikTok, Instagram, and Facebook URLs
+- Express backend with validation and unified `/api/download` endpoint
+- React frontend with progress feedback and download link handoff
+- Environment-based configuration so the frontend can talk to different backend deployments
 
 ## Project Structure
 
 ```
-video-downloader/
-├── frontend/           # React.js frontend
-│   ├── src/
-│   │   ├── App.jsx    # Main application component
-│   │   ├── App.css    # Styles
-│   │   └── main.jsx   # Entry point
-│   ├── index.html
+Dowloader/
+├── backend/               # Node.js + Express backend
+│   ├── server.js          # Express server setup
+│   ├── utils.js           # Helper utilities and placeholder extraction logic
 │   ├── package.json
-│   └── vite.config.js
+│   └── package-lock.json
 │
-└── backend/           # Node.js + Express backend
-    ├── server.js     # Express server setup
-    ├── utils.js      # Helper functions
-    └── package.json
+└── frontend/              # React + Vite frontend
+    ├── src/
+    │   ├── App.jsx        # Main application component
+    │   ├── App.css        # Styles
+    │   └── main.jsx       # Entry point
+    ├── index.html
+    ├── package.json
+    ├── vite.config.js
+    └── .env.example
 ```
 
 ## Setup and Installation
@@ -47,7 +49,7 @@ video-downloader/
    npm run dev
    ```
 
-The backend server will run on http://localhost:5000
+   The backend server will run on `http://localhost:5000` by default. The `/api/download` endpoint validates the incoming URL and returns a placeholder download link. Replace the logic inside `backend/utils.js` with your own extraction workflow when you are ready to integrate with a real provider.
 
 ### Frontend
 
@@ -66,11 +68,18 @@ The backend server will run on http://localhost:5000
    npm run dev
    ```
 
-The frontend will run on http://localhost:3000
+   The frontend will run on `http://localhost:3000`. During local development, API requests to `/api/...` are proxied to the backend server running on port `5000`.
+
+### Environment Variables
+
+The frontend reads the `VITE_API_BASE_URL` environment variable to determine where API requests should be sent.
+
+- When running locally you can omit it, and the app will automatically talk to the local backend via the `/api` proxy.
+- For production deployments, create an `.env` file based on `.env.example` and set the value to the public URL of your backend, e.g. `https://your-domain.com/api`.
 
 ## Important Note
 
-The video extraction functions in `backend/utils.js` are currently placeholder implementations. You'll need to implement proper video extraction logic using appropriate APIs or third-party services for each platform (TikTok, Instagram, and Facebook).
+The video extraction logic inside `backend/utils.js` currently returns a placeholder link. Implement proper download handling that satisfies the terms of service of each platform (TikTok, Instagram, and Facebook) before going to production.
 
 ## Optional: Adding MongoDB
 
