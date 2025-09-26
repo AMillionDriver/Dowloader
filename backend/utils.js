@@ -1,13 +1,10 @@
-const PLACEHOLDER_PATTERNS = {
-  tiktok: /tiktok\.com/,
-  instagram: /instagram\.com/,
-  facebook: /facebook\.com/,
-};
+import YtDlpWrap from 'yt-dlp-wrap';
+
+// Initialize yt-dlp-wrap. It will automatically download and use the yt-dlp binary.
+const ytDlpWrap = new YtDlpWrap();
 
 /**
- * Resolve a download URL for a given social media link.
- * This is a placeholder implementation that echoes the provided URL.
- * Replace with real download resolution logic.
+ * Resolve a download URL for a given social media link using yt-dlp.
  *
  * @param {string} url
  * @returns {Promise<string|null>}
@@ -15,13 +12,24 @@ const PLACEHOLDER_PATTERNS = {
 export async function resolveDownload(url) {
   if (!url) return null;
 
-  const matchedPlatform = Object.entries(PLACEHOLDER_PATTERNS).find(([, pattern]) => pattern.test(url));
+  try {
+    console.log(`[yt-dlp] Attempting to get video URL for: ${url}`);
 
-  if (!matchedPlatform) {
+    // Execute yt-dlp to get the direct video URL.
+    // The format selection requests the best quality MP4 video and audio,
+    // falling back to the best overall MP4 if separate streams aren't available.
+    const videoUrl = await ytDlpWrap.execPromise([
+      url,
+      '-f',
+      'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+      '--get-url',
+    ]);
+
+    console.log(`[yt-dlp] Successfully retrieved URL: ${videoUrl}`);
+    return videoUrl.trim();
+  } catch (error) {
+    console.error(`[yt-dlp] Error resolving download for ${url}:`, error.message);
+    // Return null if yt-dlp fails
     return null;
   }
-
-  // Placeholder: Simulate a successful download link resolution.
-  // In a real implementation, this would be a direct link to the video file.
-  return `https://placeholder-download-url.com/video.mp4?url=${encodeURIComponent(url)}`;
 }
