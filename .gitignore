@@ -7,3 +7,4 @@ backend/dist/
 backend/.env
 frontend/.env
 .DS_Store
+backend/yt-dlp.exe

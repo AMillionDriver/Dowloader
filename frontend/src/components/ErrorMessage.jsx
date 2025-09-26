@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 
-export function ErrorMessage({ message }) {
+export function ErrorMessage({ message = '' }) {
   if (!message) {
     return null;
   }
@@ -14,8 +14,4 @@ export function ErrorMessage({ message }) {
 
 ErrorMessage.propTypes = {
   message: PropTypes.string,
-};
-
-ErrorMessage.defaultProps = {
-  message: '',
 };
