@@ -21,6 +21,9 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// A simple regex to validate URL format. The frontend has more specific validation.
+const URL_REGEX = /^(http(s)?:\/\/.)[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)$/;
+
 app.post('/api/download', async (req, res) => {
   const { url } = req.body || {};
 
@@ -28,17 +31,22 @@ app.post('/api/download', async (req, res) => {
     return res.status(400).json({ error: 'Video URL is required' });
   }
 
+  // Basic backend validation to complement the more specific frontend validation.
+  if (!URL_REGEX.test(url)) {
+    return res.status(400).json({ error: 'Please enter a valid URL' });
+  }
+
   try {
     const downloadUrl = await resolveDownload(url);
 
     if (!downloadUrl) {
-      return res.status(404).json({ error: 'Unable to resolve download link for the provided URL' });
+      return res.status(404).json({ error: 'This video platform is not supported or the link is invalid.' });
     }
 
     res.json({ downloadUrl });
   } catch (error) {
     console.error('Download error:', error);
-    res.status(500).json({ error: 'Unexpected server error' });
+    res.status(500).json({ error: 'An unexpected error occurred on the server.' });
   }
 });
 
