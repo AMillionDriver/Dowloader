@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import NodeCache from 'node-cache';
+import { downloadQueue } from '../queues/downloadQueue.js';
 
 // Define a path for the yt-dlp binary within the backend directory
 const binaryPath = path.join(process.cwd(), 'yt-dlp.exe');
@@ -251,7 +252,7 @@ function createDownloadRecord(downloadId, url, formatId) {
     id: downloadId,
     url,
     formatId,
-    status: 'pending',
+    status: 'queued',
     error: null,
     filePath: null,
     fileName: null,
@@ -263,7 +264,7 @@ function createDownloadRecord(downloadId, url, formatId) {
       currentSpeed: null,
       eta: null,
       downloaded: null,
-      statusText: 'pending',
+      statusText: 'queued',
     },
   };
 
@@ -271,7 +272,7 @@ function createDownloadRecord(downloadId, url, formatId) {
   return record;
 }
 
-function attachDownloadListeners(downloadId, process) {
+function attachDownloadListeners(downloadId, process, { resolve, reject }) {
   process.on('progress', (progress) => {
     updateDownloadRecord(downloadId, { status: 'downloading' });
     updateDownloadProgress(downloadId, {
@@ -294,19 +295,35 @@ function attachDownloadListeners(downloadId, process) {
       status: 'error',
       error: error?.message || 'Download process failed unexpectedly.',
     });
+    reject(error);
   });
 
-  process.once('close', (code) => {
+  process.once('close', async (code) => {
     if (code === 0) {
-      finalizeSuccessfulDownload(downloadId);
-    } else {
-      const message = `Download process exited with code ${code}.`;
-      logger.error(message, { downloadId });
-      updateDownloadRecord(downloadId, {
-        status: 'error',
-        error: message,
-      });
+      try {
+        await finalizeSuccessfulDownload(downloadId);
+        const record = activeDownloads.get(downloadId);
+        if (record?.status === 'completed') {
+          resolve();
+          return;
+        }
+
+        const error = new Error(record?.error || 'Download finalization failed.');
+        reject(error);
+      } catch (error) {
+        logger.error(error, `Failed to finalize download ${downloadId}`);
+        reject(error);
+      }
+      return;
     }
+
+    const message = `Download process exited with code ${code}.`;
+    logger.error(message, { downloadId });
+    updateDownloadRecord(downloadId, {
+      status: 'error',
+      error: message,
+    });
+    reject(new Error(message));
   });
 }
 
@@ -314,36 +331,79 @@ async function queueDownload(downloadId, url, formatId) {
   ensureYtDlp();
   await ensureTempDirectory();
 
-  const record = createDownloadRecord(downloadId, url, formatId);
+  const trimmedUrl = typeof url === 'string' ? url.trim() : url;
+  const trimmedFormatId = typeof formatId === 'string' ? formatId.trim() : formatId;
+
+  const record = createDownloadRecord(downloadId, trimmedUrl, trimmedFormatId);
+  updateDownloadProgress(downloadId, { statusText: 'queued', percent: 0, eta: null });
 
   try {
-    const outputTemplate = path.join(tempDirectory, `${downloadId}.%(ext)s`);
-    logger.info(
-      `[yt-dlp] Starting download for ${url} (format: ${formatId}) -> ${outputTemplate}`
-    );
-
-    const args = [
-      '-f',
-      formatId,
-      '-o',
-      outputTemplate,
-      '--no-part',
-      '--newline',
-      url,
-    ];
-
-    const ytProcess = ytDlpWrap.exec(args);
-    attachDownloadListeners(downloadId, ytProcess);
+    await downloadQueue.add('download-video', {
+      downloadId,
+      url: trimmedUrl,
+      formatId: trimmedFormatId,
+    });
+    updateDownloadRecord(downloadId, { status: 'queued' });
   } catch (error) {
-    logger.error(error, `Failed to spawn yt-dlp for ${url} (${formatId})`);
+    logger.error(error, `Failed to queue download job for ${downloadId}`);
     updateDownloadRecord(downloadId, {
       status: 'error',
-      error: error?.message || 'Failed to start download process.',
+      error: 'Failed to queue the download job. Please try again later.',
     });
+    updateDownloadProgress(downloadId, { statusText: 'error' });
     throw error;
   }
 
   return record;
+}
+
+async function processDownloadJob(downloadId, url, formatId) {
+  ensureYtDlp();
+  await ensureTempDirectory();
+
+  const trimmedUrl = typeof url === 'string' ? url.trim() : url;
+  const trimmedFormatId = typeof formatId === 'string' ? formatId.trim() : formatId;
+
+  if (!activeDownloads.has(downloadId)) {
+    createDownloadRecord(downloadId, trimmedUrl, trimmedFormatId);
+  }
+
+  updateDownloadRecord(downloadId, {
+    url: trimmedUrl,
+    formatId: trimmedFormatId,
+    status: 'starting',
+    error: null,
+  });
+  updateDownloadProgress(downloadId, { statusText: 'starting', percent: 0, eta: null });
+
+  return new Promise((resolve, reject) => {
+    try {
+      const outputTemplate = path.join(tempDirectory, `${downloadId}.%(ext)s`);
+      logger.info(
+        `[yt-dlp] Starting download for ${trimmedUrl} (format: ${trimmedFormatId}) -> ${outputTemplate}`
+      );
+
+      const args = [
+        '-f',
+        trimmedFormatId,
+        '-o',
+        outputTemplate,
+        '--no-part',
+        '--newline',
+        trimmedUrl,
+      ];
+
+      const ytProcess = ytDlpWrap.exec(args);
+      attachDownloadListeners(downloadId, ytProcess, { resolve, reject });
+    } catch (error) {
+      logger.error(error, `Failed to spawn yt-dlp for ${trimmedUrl} (${trimmedFormatId})`);
+      updateDownloadRecord(downloadId, {
+        status: 'error',
+        error: error?.message || 'Failed to start download process.',
+      });
+      reject(error);
+    }
+  });
 }
 
 function getDownloadSnapshot(downloadId) {
@@ -477,6 +537,7 @@ async function deleteTemporaryFile(filePath) {
 export const downloadService = {
   fetchVideoInfo,
   queueDownload,
+  processDownloadJob,
   getDownloadSnapshot,
   getDownloadFileInfo,
   cleanupDownload,
