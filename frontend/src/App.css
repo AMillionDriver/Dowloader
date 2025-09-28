@@ -217,6 +217,87 @@ body {
   font-weight: 500;
 }
 
+.progress-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin-top: 0.75rem;
+  color: var(--color-text-subtle);
+  font-size: 0.85rem;
+}
+
+.progress-details__item {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 120px;
+}
+
+.progress-details__item dt {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  color: var(--color-primary-dark);
+}
+
+.progress-details__item dd {
+  margin: 0;
+}
+
+.download-ready {
+  margin-top: 0.75rem;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  border-radius: var(--radius-medium);
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.download-ready__meta {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.download-ready__label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+  color: var(--color-primary-dark);
+}
+
+.download-ready__filename {
+  font-weight: 500;
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.download-now-button {
+  border: none;
+  border-radius: var(--radius-medium);
+  background: var(--color-primary);
+  color: #fff;
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.download-now-button:hover {
+  background: var(--color-primary-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px -16px rgba(37, 99, 235, 0.7);
+}
+
+.download-now-button:active {
+  transform: translateY(0);
+}
+
 .error-message {
   background: rgba(220, 38, 38, 0.12);
   border: 1px solid rgba(220, 38, 38, 0.35);
