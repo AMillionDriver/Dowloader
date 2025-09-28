@@ -151,9 +151,46 @@ async function getFile(req, res, next) {
   }
 }
 
+async function downloadSubtitle(req, res, next) {
+  try {
+    const { url, lang } = req.body || {};
+
+    if (!url) {
+      return res.status(400).json({ error: 'Video URL is required' });
+    }
+
+    if (!URL_REGEX.test(url)) {
+      return res.status(400).json({ error: 'Please enter a valid URL' });
+    }
+
+    if (typeof lang !== 'string' || !lang.trim()) {
+      return res.status(400).json({ error: 'A subtitle language code is required.' });
+    }
+
+    const fileInfo = await downloadService.downloadSubtitleFile(url.trim(), lang.trim());
+
+    return res.download(fileInfo.filePath, fileInfo.fileName, (err) => {
+      downloadService.deleteTemporaryFile(fileInfo.filePath).catch(() => {});
+
+      if (err) {
+        return next(err);
+      }
+
+      return undefined;
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+
+    return next(error);
+  }
+}
+
 export const downloadController = {
   getVideoInfo,
   prepareDownload,
   streamDownloadProgress,
   getFile,
+  downloadSubtitle,
 };

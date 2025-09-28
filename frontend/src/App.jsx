@@ -23,6 +23,7 @@ function App() {
     handleSubmit,
     handleFormatDownload,
     handleDownloadNow,
+    handleSubtitleDownload,
     resetProgress,
   } = useDownloader();
 
@@ -65,6 +66,7 @@ function App() {
           <VideoInfoResult
             info={videoInfo}
             onDownload={handleFormatDownload}
+            onSubtitleDownload={handleSubtitleDownload}
             isBusy={isProcessing}
           />
         )}
