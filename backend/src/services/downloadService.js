@@ -2,10 +2,12 @@ import YTDlpWrap from 'yt-dlp-wrap';
 import logger from './logger.js';
 import path from 'path';
 import fs from 'fs';
+import NodeCache from 'node-cache';
 
 // Define a path for the yt-dlp binary within the backend directory
 const binaryPath = path.join(process.cwd(), 'yt-dlp.exe');
 let ytDlpWrap;
+const videoInfoCache = new NodeCache({ stdTTL: 3600 });
 
 function ensureYtDlp() {
   if (!ytDlpWrap) {
@@ -90,6 +92,15 @@ async function fetchVideoInfo(url) {
   ensureYtDlp();
 
   try {
+    const cacheKey = url;
+    const cachedInfo = videoInfoCache.get(cacheKey);
+
+    if (cachedInfo) {
+      console.log(`[cache] hit for ${cacheKey}`);
+      return cachedInfo;
+    }
+
+    console.log(`[cache] miss for ${cacheKey}`);
     logger.info(`[yt-dlp] Fetching metadata for: ${url}`);
     const rawJson = await ytDlpWrap.execPromise([url, '--dump-json']);
     const parsedJson = rawJson
@@ -104,7 +115,7 @@ async function fetchVideoInfo(url) {
 
     const durationSeconds = typeof parsedJson.duration === 'number' ? parsedJson.duration : null;
 
-    return {
+    const normalizedInfo = {
       title: parsedJson.title || 'Untitled video',
       thumbnail: parsedJson.thumbnail || null,
       duration: durationSeconds,
@@ -112,6 +123,10 @@ async function fetchVideoInfo(url) {
       formats: normalizeFormats(parsedJson.formats),
       subtitles: normalizeSubtitles(parsedJson.subtitles),
     };
+
+    videoInfoCache.set(cacheKey, normalizedInfo);
+
+    return normalizedInfo;
   } catch (error) {
     logger.error(error, `[yt-dlp] Error fetching metadata for ${url}`);
     throw error;
