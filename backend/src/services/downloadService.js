@@ -159,6 +159,19 @@ function normalizeSubtitles(subtitles = {}) {
   return Object.keys(subtitles).sort((a, b) => a.localeCompare(b));
 }
 
+function createTemporarySubtitlePrefix() {
+  return `subtitle-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isSubtitleFile(fileName, prefix) {
+  if (!fileName.startsWith(prefix)) {
+    return false;
+  }
+
+  const validExtensions = ['.vtt', '.srt', '.ass', '.lrc', '.ttml', '.sbv'];
+  return validExtensions.some((extension) => fileName.endsWith(extension));
+}
+
 /**
  * Checks for yt-dlp binary and downloads it if not found.
  * Initializes the ytDlpWrap instance.
@@ -377,10 +390,96 @@ async function cleanupDownload(downloadId) {
   activeDownloads.delete(downloadId);
 }
 
+async function downloadSubtitleFile(url, lang) {
+  ensureYtDlp();
+  await ensureTempDirectory();
+
+  const trimmedUrl = typeof url === 'string' ? url.trim() : '';
+  const trimmedLang = typeof lang === 'string' ? lang.trim() : '';
+
+  if (!trimmedUrl) {
+    const error = new Error('A valid video URL is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!trimmedLang) {
+    const error = new Error('A subtitle language code is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const prefix = createTemporarySubtitlePrefix();
+  const outputTemplate = path.join(tempDirectory, `${prefix}.%(ext)s`);
+
+  try {
+    await ytDlpWrap.execPromise([
+      trimmedUrl,
+      '--skip-download',
+      '--write-subs',
+      '--sub-lang',
+      trimmedLang,
+      '--sub-format',
+      'best',
+      '-o',
+      outputTemplate,
+    ]);
+  } catch (error) {
+    logger.error(error, `[yt-dlp] Failed subtitle download for ${trimmedUrl} (${trimmedLang})`);
+    const wrappedError = new Error('Failed to download the requested subtitle.');
+    wrappedError.statusCode = 502;
+    wrappedError.cause = error;
+    throw wrappedError;
+  }
+
+  try {
+    const entries = await fsPromises.readdir(tempDirectory);
+    const match = entries.find((file) => isSubtitleFile(file, prefix));
+
+    if (!match) {
+      const notFoundError = new Error('Subtitle not available for the requested language.');
+      notFoundError.statusCode = 404;
+      throw notFoundError;
+    }
+
+    const filePath = path.join(tempDirectory, match);
+    return {
+      filePath,
+      fileName: match,
+    };
+  } catch (error) {
+    if (!error.statusCode) {
+      logger.error(error, 'Unable to locate downloaded subtitle file.');
+      const wrappedError = new Error('Subtitle not available for the requested language.');
+      wrappedError.statusCode = 404;
+      wrappedError.cause = error;
+      throw wrappedError;
+    }
+
+    throw error;
+  }
+}
+
+async function deleteTemporaryFile(filePath) {
+  if (!filePath) {
+    return;
+  }
+
+  try {
+    await fsPromises.unlink(filePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      logger.error(error, `Failed to delete temporary subtitle file: ${filePath}`);
+    }
+  }
+}
+
 export const downloadService = {
   fetchVideoInfo,
   queueDownload,
   getDownloadSnapshot,
   getDownloadFileInfo,
   cleanupDownload,
+  downloadSubtitleFile,
+  deleteTemporaryFile,
 };

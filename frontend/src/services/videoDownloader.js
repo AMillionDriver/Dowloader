@@ -20,6 +20,18 @@ export async function prepareServerDownload(url, formatId, signal) {
   return response.data;
 }
 
+export async function downloadSubtitle(url, lang) {
+  const response = await apiClient.post(
+    '/api/download-subtitle',
+    { url, lang },
+    {
+      responseType: 'blob',
+    }
+  );
+
+  return response;
+}
+
 function resolveApiBaseUrl() {
   const baseURL = apiClient.defaults.baseURL || '';
   return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;

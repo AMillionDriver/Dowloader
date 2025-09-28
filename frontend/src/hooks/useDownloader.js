@@ -5,6 +5,7 @@ import {
   createDownloadEventSource,
   prepareServerDownload,
   requestVideoInfo,
+  downloadSubtitle as downloadSubtitleRequest,
 } from '../services/videoDownloader';
 
 const STATUS_IDLE = 'idle';
@@ -21,6 +22,28 @@ const INITIAL_PROGRESS_DETAILS = {
   downloaded: null,
   statusText: '',
 };
+
+function extractFileName(contentDisposition) {
+  if (!contentDisposition || typeof contentDisposition !== 'string') {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      return utf8Match[1];
+    }
+  }
+
+  const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  if (asciiMatch?.[1]) {
+    return asciiMatch[1];
+  }
+
+  return null;
+}
 
 function matchPlatform(url) {
   try {
@@ -384,6 +407,56 @@ export function useDownloader() {
     setStatusMessage('Your download should start shortly.');
   }, [downloadId, downloadFileName]);
 
+  const handleSubtitleDownload = useCallback(
+    async (subtitleLang) => {
+      const trimmedLang = typeof subtitleLang === 'string' ? subtitleLang.trim() : '';
+
+      if (!trimmedLang) {
+        setError('A subtitle language code is required.');
+        return;
+      }
+
+      if (!validation.isValid) {
+        setError('Enter a valid video URL before downloading.');
+        return;
+      }
+
+      const trimmedUrl = url.trim();
+
+      if (!trimmedUrl) {
+        setError('Enter a valid video URL before downloading.');
+        return;
+      }
+
+      try {
+        setError('');
+        setStatusMessage(`Requesting ${trimmedLang} subtitles...`);
+
+        const response = await downloadSubtitleRequest(trimmedUrl, trimmedLang);
+        const { headers } = response;
+        const fileName =
+          extractFileName(headers?.['content-disposition']) || `subtitle-${trimmedLang}.vtt`;
+        const blob = new Blob([response.data], {
+          type: headers?.['content-type'] || 'text/vtt',
+        });
+        const objectUrl = URL.createObjectURL(blob);
+
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = fileName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+
+        URL.revokeObjectURL(objectUrl);
+        setStatusMessage(`Subtitle download for ${trimmedLang} should start shortly.`);
+      } catch (subtitleError) {
+        setError(subtitleError.message);
+      }
+    },
+    [url, validation.isValid]
+  );
+
   return {
     url,
     status,
@@ -401,6 +474,7 @@ export function useDownloader() {
     handleSubmit,
     handleFormatDownload,
     handleDownloadNow,
+    handleSubtitleDownload,
     resetProgress,
   };
 }

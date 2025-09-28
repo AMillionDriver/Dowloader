@@ -19,6 +19,26 @@ function formatDuration(seconds, fallback) {
   return parts.join(':');
 }
 
+const browserLanguage =
+  typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en';
+
+const languageDisplayNames =
+  typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
+    ? new Intl.DisplayNames([browserLanguage], { type: 'language' })
+    : null;
+
+function getLanguageLabel(code) {
+  if (!code) {
+    return '';
+  }
+
+  try {
+    return languageDisplayNames?.of(code) || code;
+  } catch (error) {
+    return code;
+  }
+}
+
 function FormatsTable({ title, emptyMessage, formats, onDownload, disabled }) {
   return (
     <section className="format-section">
@@ -84,12 +104,13 @@ FormatsTable.defaultProps = {
   disabled: false,
 };
 
-export function VideoInfoResult({ info, onDownload, isBusy }) {
+export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }) {
   if (!info) {
     return null;
   }
 
   const availableFormats = Array.isArray(info.formats) ? info.formats : [];
+  const availableSubtitles = Array.isArray(info.subtitles) ? info.subtitles : [];
 
   const videoFormats = [...availableFormats.filter((format) => format.type === 'video')].sort(
     (a, b) => {
@@ -141,6 +162,27 @@ export function VideoInfoResult({ info, onDownload, isBusy }) {
         </div>
       </div>
 
+      {availableSubtitles.length > 0 && (
+        <section className="subtitle-section" aria-label="Available subtitles">
+          <h3>Available Subtitles</h3>
+          <ul className="subtitle-list">
+            {availableSubtitles.map((code) => (
+              <li key={code} className="subtitle-list__item">
+                <span className="subtitle-list__label">{getLanguageLabel(code)}</span>
+                <button
+                  type="button"
+                  className="subtitle-download-button"
+                  onClick={() => onSubtitleDownload(code)}
+                  disabled={isBusy}
+                >
+                  Download
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="video-result__formats">
         <FormatsTable
           title="Video Formats"
@@ -180,11 +222,13 @@ VideoInfoResult.propTypes = {
     subtitles: PropTypes.arrayOf(PropTypes.string),
   }),
   onDownload: PropTypes.func.isRequired,
+  onSubtitleDownload: PropTypes.func,
   isBusy: PropTypes.bool,
 };
 
 VideoInfoResult.defaultProps = {
   info: null,
+  onSubtitleDownload: () => {},
   isBusy: false,
 };
 

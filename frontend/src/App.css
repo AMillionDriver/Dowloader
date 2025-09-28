@@ -369,6 +369,69 @@ body {
   gap: 1.5rem;
 }
 
+.subtitle-section {
+  background: #fff;
+  border-radius: var(--radius-medium);
+  padding: 1rem 1.25rem;
+  box-shadow: 0 15px 25px -20px rgba(15, 23, 42, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.subtitle-section h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--color-text);
+}
+
+.subtitle-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.subtitle-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.subtitle-list__label {
+  font-size: 0.95rem;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.subtitle-download-button {
+  border: none;
+  border-radius: var(--radius-medium);
+  background: var(--color-primary);
+  color: #fff;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.subtitle-download-button:hover {
+  background: var(--color-primary-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 18px -16px rgba(37, 99, 235, 0.65);
+}
+
+.subtitle-download-button:disabled {
+  cursor: not-allowed;
+  background: #94a3b8;
+  box-shadow: none;
+  transform: none;
+}
+
 .format-table-wrapper {
   overflow-x: auto;
 }
