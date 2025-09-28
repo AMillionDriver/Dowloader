@@ -7,6 +7,58 @@ import fs from 'fs';
 const binaryPath = path.join(process.cwd(), 'yt-dlp.exe');
 let ytDlpWrap;
 
+function ensureYtDlp() {
+  if (!ytDlpWrap) {
+    throw new Error('yt-dlp is not initialized.');
+  }
+}
+
+function formatDuration(seconds) {
+  if (typeof seconds !== 'number' || Number.isNaN(seconds) || seconds < 0) {
+    return null;
+  }
+
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+
+  const parts = [minutes.toString().padStart(2, '0'), secs.toString().padStart(2, '0')];
+
+  if (hours > 0) {
+    parts.unshift(hours.toString());
+  }
+
+  return parts.join(':');
+}
+
+function normalizeFormats(formats = []) {
+  return formats
+    .filter((format) => format?.format_id && format?.ext)
+    .map((format) => {
+      const isAudioOnly = format.vcodec === 'none';
+      const resolution = isAudioOnly
+        ? format.abr
+          ? `${format.abr} kbps`
+          : 'Audio only'
+        : format.height
+        ? `${format.height}p`
+        : format.format_note || 'Unknown';
+
+      return {
+        formatId: format.format_id,
+        resolution,
+        ext: format.ext,
+        type: isAudioOnly ? 'audio' : 'video',
+        note: format.format_note || format.format || '',
+      };
+    });
+}
+
+function normalizeSubtitles(subtitles = {}) {
+  return Object.keys(subtitles).sort((a, b) => a.localeCompare(b));
+}
+
 /**
  * Checks for yt-dlp binary and downloads it if not found.
  * Initializes the ytDlpWrap instance.
@@ -29,36 +81,78 @@ export async function initialize() {
 }
 
 /**
+ * Retrieve metadata for a given video URL using yt-dlp.
+ *
+ * @param {string} url
+ * @returns {Promise<object>}
+ */
+async function fetchVideoInfo(url) {
+  ensureYtDlp();
+
+  try {
+    logger.info(`[yt-dlp] Fetching metadata for: ${url}`);
+    const rawJson = await ytDlpWrap.execPromise([url, '--dump-json']);
+    const parsedJson = rawJson
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))[0];
+
+    if (!parsedJson) {
+      throw new Error('Unable to parse video metadata.');
+    }
+
+    const durationSeconds = typeof parsedJson.duration === 'number' ? parsedJson.duration : null;
+
+    return {
+      title: parsedJson.title || 'Untitled video',
+      thumbnail: parsedJson.thumbnail || null,
+      duration: durationSeconds,
+      durationFormatted: formatDuration(durationSeconds),
+      formats: normalizeFormats(parsedJson.formats),
+      subtitles: normalizeSubtitles(parsedJson.subtitles),
+    };
+  } catch (error) {
+    logger.error(error, `[yt-dlp] Error fetching metadata for ${url}`);
+    throw error;
+  }
+}
+
+/**
  * Resolve a download URL for a given social media link using yt-dlp.
  *
  * @param {string} url
- * @returns {Promise<string|null>}
+ * @param {string} formatId
+ * @returns {Promise<string>}
  */
-async function resolveDownload(url) {
-  if (!url) return null;
+async function resolveDownload(url, formatId) {
+  ensureYtDlp();
 
   try {
-    logger.info(`[yt-dlp] Attempting to get video URL for: ${url}`);
+    logger.info(`[yt-dlp] Attempting to get video URL for: ${url} (format: ${formatId})`);
 
     const videoUrl = await ytDlpWrap.execPromise([
       url,
       '-f',
-      'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+      formatId,
       '--get-url',
     ]);
 
-    // yt-dlp can return multiple URLs (video + audio), separated by newlines.
-    // We'll take the first one, which is typically the main video content.
-    const firstUrl = videoUrl.split('\n')[0].trim();
+    const firstUrl = videoUrl.split('\n').map((line) => line.trim()).find(Boolean);
+
+    if (!firstUrl) {
+      throw new Error('Download URL could not be resolved.');
+    }
 
     logger.info(`[yt-dlp] Successfully retrieved URL: ${firstUrl}`);
     return firstUrl;
   } catch (error) {
-    logger.error(error, `[yt-dlp] Error resolving download for ${url}`);
-    return null;
+    logger.error(error, `[yt-dlp] Error resolving download for ${url} (format: ${formatId})`);
+    throw error;
   }
 }
 
 export const downloadService = {
+  fetchVideoInfo,
   resolveDownload,
 };

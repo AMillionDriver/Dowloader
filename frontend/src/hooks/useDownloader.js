@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { SUPPORTED_PLATFORMS } from '../constants/platforms';
-import { requestVideoDownload } from '../services/videoDownloader';
+import { requestVideoDownload, requestVideoInfo } from '../services/videoDownloader';
 
 const STATUS_IDLE = 'idle';
-const STATUS_VALIDATING = 'validating';
-const STATUS_PROCESSING = 'processing';
+const STATUS_FETCHING_INFO = 'fetching-info';
+const STATUS_READY = 'ready';
 const STATUS_DOWNLOADING = 'downloading';
 const STATUS_SUCCESS = 'success';
 
@@ -45,13 +45,6 @@ function validateUrl(url) {
   }
 
   const platform = matchPlatform(url);
-  if (!platform) {
-    return {
-      isValid: false,
-      message:
-        'Unsupported platform. Please provide a TikTok, Instagram, or Facebook URL.',
-    };
-  }
 
   return { isValid: true, message: '', platform };
 }
@@ -63,37 +56,56 @@ export function useDownloader() {
   const [statusMessage, setStatusMessage] = useState('');
   const [error, setError] = useState('');
   const [validation, setValidation] = useState({ isValid: false, message: '' });
-  const abortControllerRef = useRef(null);
+  const [videoInfo, setVideoInfo] = useState(null);
+  const infoAbortControllerRef = useRef(null);
+  const downloadAbortControllerRef = useRef(null);
 
   const isProcessing = useMemo(
-    () => [STATUS_VALIDATING, STATUS_PROCESSING, STATUS_DOWNLOADING].includes(status),
+    () => [STATUS_FETCHING_INFO, STATUS_DOWNLOADING].includes(status),
     [status]
   );
 
   const handleUrlChange = useCallback((value) => {
-    setUrl(value);
-    const result = validateUrl(value);
-    setValidation(result);
-
-    if (!result.isValid) {
-      setStatus(STATUS_IDLE);
-      setStatusMessage('');
+    if (infoAbortControllerRef.current) {
+      infoAbortControllerRef.current.abort();
+      infoAbortControllerRef.current = null;
     }
+
+    setUrl(value);
+    setValidation(validateUrl(value));
+    setError('');
+    setVideoInfo(null);
+    setStatus(STATUS_IDLE);
+    setStatusMessage('');
+    setProgress(0);
   }, []);
 
   const resetProgress = useCallback(() => {
+    if (infoAbortControllerRef.current) {
+      infoAbortControllerRef.current.abort();
+      infoAbortControllerRef.current = null;
+    }
+
+    if (downloadAbortControllerRef.current) {
+      downloadAbortControllerRef.current.abort();
+      downloadAbortControllerRef.current = null;
+    }
+
+    setUrl('');
+    setVideoInfo(null);
     setStatus(STATUS_IDLE);
     setProgress(0);
     setStatusMessage('');
     setError('');
-    setValidation(validateUrl(url));
-  }, [url]);
+    setValidation({ isValid: false, message: '' });
+  }, []);
 
   const handleSubmit = useCallback(
     async (event) => {
       event.preventDefault();
 
-      const result = validateUrl(url);
+      const trimmedUrl = url.trim();
+      const result = validateUrl(trimmedUrl);
       setValidation(result);
 
       if (!result.isValid) {
@@ -101,46 +113,97 @@ export function useDownloader() {
         return;
       }
 
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+      if (infoAbortControllerRef.current) {
+        infoAbortControllerRef.current.abort();
       }
 
       const controller = new AbortController();
-      abortControllerRef.current = controller;
+      infoAbortControllerRef.current = controller;
 
       try {
         setError('');
-        setStatus(STATUS_VALIDATING);
-        setStatusMessage('Validating link...');
-        setProgress(10);
+        setVideoInfo(null);
+        setStatus(STATUS_FETCHING_INFO);
+        setStatusMessage('Fetching video information...');
+        setProgress(30);
 
-        const platform = result.platform;
-        setStatus(STATUS_PROCESSING);
+        setUrl(trimmedUrl);
+
+        const info = await requestVideoInfo(trimmedUrl, controller.signal);
+        setVideoInfo(info);
+
+        const platformName = result.platform?.name;
+        setStatus(STATUS_READY);
         setStatusMessage(
-          `Preparing download${platform ? ` from ${platform.name}` : ''}...`
+          `Select a format to download${platformName ? ` (${platformName})` : ''}.`
         );
-        setProgress(45);
-
-        const data = await requestVideoDownload(url, controller.signal);
-
-        if (!data?.downloadUrl) {
-          throw new Error(
-            'Download link was not provided by the server. Please try again.'
-          );
+        setProgress(60);
+      } catch (requestError) {
+        if (requestError.name === 'CanceledError') {
+          return;
         }
 
+        setError(requestError.message);
+        setStatus(STATUS_IDLE);
+        setStatusMessage('');
+        setProgress(0);
+        setVideoInfo(null);
+      } finally {
+        infoAbortControllerRef.current = null;
+      }
+    },
+    [url]
+  );
+
+  const handleFormatDownload = useCallback(
+    async (format) => {
+      if (!format?.formatId) {
+        setError('A valid format selection is required.');
+        return;
+      }
+
+      if (!validation.isValid) {
+        setError('Enter a valid video URL before downloading.');
+        return;
+      }
+
+      if (downloadAbortControllerRef.current) {
+        downloadAbortControllerRef.current.abort();
+      }
+
+      const trimmedUrl = url.trim();
+
+      if (!trimmedUrl) {
+        setError('Enter a valid video URL before downloading.');
+        return;
+      }
+
+      const controller = new AbortController();
+      downloadAbortControllerRef.current = controller;
+
+      try {
+        setError('');
         setStatus(STATUS_DOWNLOADING);
-        setStatusMessage('Starting download...');
+        setStatusMessage('Generating download link...');
         setProgress(85);
+
+        const data = await requestVideoDownload(trimmedUrl, format.formatId, controller.signal);
+
+        if (!data?.downloadUrl) {
+          throw new Error('Download link was not provided by the server. Please try again.');
+        }
 
         const anchor = document.createElement('a');
         anchor.href = data.downloadUrl;
         anchor.target = '_blank';
         anchor.rel = 'noopener noreferrer';
+        anchor.download = '';
+        document.body.appendChild(anchor);
         anchor.click();
+        anchor.remove();
 
         setStatus(STATUS_SUCCESS);
-        setStatusMessage('Download started in a new tab.');
+        setStatusMessage('Your download should start automatically.');
         setProgress(100);
       } catch (downloadError) {
         if (downloadError.name === 'CanceledError') {
@@ -148,14 +211,14 @@ export function useDownloader() {
         }
 
         setError(downloadError.message);
-        setStatus(STATUS_IDLE);
-        setStatusMessage('');
-        setProgress(0);
+        setStatus(STATUS_READY);
+        setStatusMessage('Select a format to download.');
+        setProgress(60);
       } finally {
-        abortControllerRef.current = null;
+        downloadAbortControllerRef.current = null;
       }
     },
-    [url]
+    [url, validation.isValid]
   );
 
   return {
@@ -166,8 +229,11 @@ export function useDownloader() {
     error,
     validation,
     isProcessing,
+    videoInfo,
     handleUrlChange,
     handleSubmit,
+    handleFormatDownload,
     resetProgress,
   };
 }
+
