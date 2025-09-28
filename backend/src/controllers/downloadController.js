@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from 'uuid';
 import { downloadService } from '../services/downloadService.js';
 
 const URL_REGEX = /^(http(s)?:\/\/.)[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)$/;
@@ -47,7 +48,7 @@ async function getVideoInfo(req, res, next) {
   }
 }
 
-async function getDownloadLink(req, res, next) {
+async function prepareDownload(req, res, next) {
   try {
     const { url, formatId } = req.body || {};
 
@@ -63,13 +64,14 @@ async function getDownloadLink(req, res, next) {
       return res.status(400).json({ error: 'A valid formatId is required.' });
     }
 
-    const downloadUrl = await downloadService.resolveDownload(url, formatId.trim());
+    const downloadId = uuidv4();
+    await downloadService.queueDownload(downloadId, url.trim(), formatId.trim());
 
-    return res.json({ downloadUrl });
+    return res.status(202).json({ downloadId });
   } catch (error) {
     if (!error.statusCode) {
       const wrappedError = new Error(
-        'Failed to generate a download link for the selected format. Please try again or choose another format.'
+        'Failed to start the download process. Please try again in a moment.'
       );
       wrappedError.statusCode = 502;
       wrappedError.cause = error;
@@ -80,7 +82,78 @@ async function getDownloadLink(req, res, next) {
   }
 }
 
+function streamDownloadProgress(req, res) {
+  const { downloadId } = req.params;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  const sendSnapshot = () => {
+    const snapshot = downloadService.getDownloadSnapshot(downloadId);
+
+    if (!snapshot) {
+      res.write('data: ' + JSON.stringify({ status: 'not-found' }) + '\n\n');
+      clearInterval(intervalId);
+      res.end();
+      return;
+    }
+
+    if (snapshot.status === 'error') {
+      res.write('data: ' + JSON.stringify({ status: 'error', error: snapshot.error }) + '\n\n');
+      clearInterval(intervalId);
+      res.end();
+      return;
+    }
+
+    res.write('data: ' + JSON.stringify({
+      status: snapshot.status,
+      progress: snapshot.progress,
+      fileName: snapshot.fileName,
+    }) + '\n\n');
+
+    if (snapshot.status === 'completed') {
+      res.write('data: done\n\n');
+      clearInterval(intervalId);
+      res.end();
+    }
+  };
+
+  const intervalId = setInterval(sendSnapshot, 1000);
+  sendSnapshot();
+
+  req.on('close', () => {
+    clearInterval(intervalId);
+  });
+}
+
+async function getFile(req, res, next) {
+  try {
+    const { downloadId } = req.params;
+    const fileInfo = downloadService.getDownloadFileInfo(downloadId);
+
+    if (!fileInfo) {
+      return res.status(404).json({ error: 'Download not found or not ready.' });
+    }
+
+    return res.download(fileInfo.filePath, fileInfo.fileName, async (err) => {
+      if (err) {
+        return next(err);
+      }
+
+      await downloadService.cleanupDownload(downloadId);
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 export const downloadController = {
   getVideoInfo,
-  getDownloadLink,
+  prepareDownload,
+  streamDownloadProgress,
+  getFile,
 };

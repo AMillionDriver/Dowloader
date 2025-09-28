@@ -15,11 +15,19 @@ function App() {
     validation,
     isProcessing,
     videoInfo,
+    downloadId,
+    progressDetails,
+    isDownloadReady,
+    downloadFileName,
     handleUrlChange,
     handleSubmit,
     handleFormatDownload,
+    handleDownloadNow,
     resetProgress,
   } = useDownloader();
+
+  const shouldHideFormats =
+    !videoInfo || status === 'downloading' || isDownloadReady;
 
   return (
     <div className="page">
@@ -43,16 +51,23 @@ function App() {
           status={status}
           statusMessage={statusMessage}
           progress={progress}
+          progressDetails={progressDetails}
+          isDownloadReady={isDownloadReady}
+          downloadFileName={downloadFileName}
+          hasDownloadId={Boolean(downloadId)}
+          onDownloadNow={handleDownloadNow}
           onReset={resetProgress}
         />
 
         <ErrorMessage message={error} />
 
-        <VideoInfoResult
-          info={videoInfo}
-          onDownload={handleFormatDownload}
-          isBusy={isProcessing}
-        />
+        {!shouldHideFormats && (
+          <VideoInfoResult
+            info={videoInfo}
+            onDownload={handleFormatDownload}
+            isBusy={isProcessing}
+          />
+        )}
       </main>
 
       <footer className="page__footer">

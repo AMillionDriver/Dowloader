@@ -1,12 +1,26 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SUPPORTED_PLATFORMS } from '../constants/platforms';
-import { requestVideoDownload, requestVideoInfo } from '../services/videoDownloader';
+import {
+  buildDownloadFileUrl,
+  createDownloadEventSource,
+  prepareServerDownload,
+  requestVideoInfo,
+} from '../services/videoDownloader';
 
 const STATUS_IDLE = 'idle';
 const STATUS_FETCHING_INFO = 'fetching-info';
 const STATUS_READY = 'ready';
 const STATUS_DOWNLOADING = 'downloading';
 const STATUS_SUCCESS = 'success';
+
+const INITIAL_PROGRESS_DETAILS = {
+  percent: 0,
+  totalSize: null,
+  currentSpeed: null,
+  eta: null,
+  downloaded: null,
+  statusText: '',
+};
 
 function matchPlatform(url) {
   try {
@@ -57,8 +71,13 @@ export function useDownloader() {
   const [error, setError] = useState('');
   const [validation, setValidation] = useState({ isValid: false, message: '' });
   const [videoInfo, setVideoInfo] = useState(null);
+  const [downloadId, setDownloadId] = useState(null);
+  const [isDownloadReady, setIsDownloadReady] = useState(false);
+  const [downloadFileName, setDownloadFileName] = useState('');
+  const [progressDetails, setProgressDetails] = useState(INITIAL_PROGRESS_DETAILS);
   const infoAbortControllerRef = useRef(null);
   const downloadAbortControllerRef = useRef(null);
+  const eventSourceRef = useRef(null);
 
   const isProcessing = useMemo(
     () => [STATUS_FETCHING_INFO, STATUS_DOWNLOADING].includes(status),
@@ -71,6 +90,11 @@ export function useDownloader() {
       infoAbortControllerRef.current = null;
     }
 
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
     setUrl(value);
     setValidation(validateUrl(value));
     setError('');
@@ -78,7 +102,24 @@ export function useDownloader() {
     setStatus(STATUS_IDLE);
     setStatusMessage('');
     setProgress(0);
+    setDownloadId(null);
+    setIsDownloadReady(false);
+    setDownloadFileName('');
+    setProgressDetails(INITIAL_PROGRESS_DETAILS);
   }, []);
+
+  const closeDownloadStream = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      closeDownloadStream();
+    };
+  }, [closeDownloadStream]);
 
   const resetProgress = useCallback(() => {
     if (infoAbortControllerRef.current) {
@@ -91,6 +132,8 @@ export function useDownloader() {
       downloadAbortControllerRef.current = null;
     }
 
+    closeDownloadStream();
+
     setUrl('');
     setVideoInfo(null);
     setStatus(STATUS_IDLE);
@@ -98,7 +141,11 @@ export function useDownloader() {
     setStatusMessage('');
     setError('');
     setValidation({ isValid: false, message: '' });
-  }, []);
+    setDownloadId(null);
+    setIsDownloadReady(false);
+    setDownloadFileName('');
+    setProgressDetails(INITIAL_PROGRESS_DETAILS);
+  }, [closeDownloadStream]);
 
   const handleSubmit = useCallback(
     async (event) => {
@@ -167,10 +214,6 @@ export function useDownloader() {
         return;
       }
 
-      if (downloadAbortControllerRef.current) {
-        downloadAbortControllerRef.current.abort();
-      }
-
       const trimmedUrl = url.trim();
 
       if (!trimmedUrl) {
@@ -178,33 +221,125 @@ export function useDownloader() {
         return;
       }
 
+      if (downloadAbortControllerRef.current) {
+        downloadAbortControllerRef.current.abort();
+      }
+
+      closeDownloadStream();
+
       const controller = new AbortController();
       downloadAbortControllerRef.current = controller;
 
       try {
         setError('');
         setStatus(STATUS_DOWNLOADING);
-        setStatusMessage('Generating download link...');
-        setProgress(85);
+        setStatusMessage('Preparing your download...');
+        setProgress(0);
+        setIsDownloadReady(false);
+        setDownloadFileName('');
+        setProgressDetails({
+          ...INITIAL_PROGRESS_DETAILS,
+          statusText: 'pending',
+        });
 
-        const data = await requestVideoDownload(trimmedUrl, format.formatId, controller.signal);
+        const data = await prepareServerDownload(
+          trimmedUrl,
+          format.formatId,
+          controller.signal
+        );
 
-        if (!data?.downloadUrl) {
-          throw new Error('Download link was not provided by the server. Please try again.');
+        if (!data?.downloadId) {
+          throw new Error('The server did not return a download identifier. Please try again.');
         }
 
-        const anchor = document.createElement('a');
-        anchor.href = data.downloadUrl;
-        anchor.target = '_blank';
-        anchor.rel = 'noopener noreferrer';
-        anchor.download = '';
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
+        setDownloadId(data.downloadId);
+        setStatusMessage('Downloading to server...');
 
-        setStatus(STATUS_SUCCESS);
-        setStatusMessage('Your download should start automatically.');
-        setProgress(100);
+        const eventSource = createDownloadEventSource(data.downloadId);
+        eventSourceRef.current = eventSource;
+
+        eventSource.onmessage = (event) => {
+          if (event.data === 'done') {
+            setIsDownloadReady(true);
+            setStatus(STATUS_SUCCESS);
+            setStatusMessage('Download ready! Click "Download Now" to save the file.');
+            setProgress(100);
+            setProgressDetails((previous) => ({
+              ...previous,
+              percent: 100,
+              statusText: 'completed',
+              eta: '00:00',
+            }));
+            closeDownloadStream();
+            return;
+          }
+
+          let payload;
+          try {
+            payload = JSON.parse(event.data);
+          } catch (parseError) {
+            console.warn('Unable to parse progress payload', parseError);
+            return;
+          }
+
+          if (payload.status === 'not-found') {
+            setError('Download session was not found on the server. Please try again.');
+            setStatus(STATUS_READY);
+            setStatusMessage('Select a format to download.');
+            setProgress(60);
+            closeDownloadStream();
+            setDownloadId(null);
+            setIsDownloadReady(false);
+            setDownloadFileName('');
+            setProgressDetails(INITIAL_PROGRESS_DETAILS);
+            return;
+          }
+
+          if (payload.status === 'error') {
+            setError(payload.error || 'Download failed on the server. Please retry.');
+            setStatus(STATUS_READY);
+            setStatusMessage('Select a format to download.');
+            setProgress(60);
+            closeDownloadStream();
+            setDownloadId(null);
+            setIsDownloadReady(false);
+            setDownloadFileName('');
+            setProgressDetails(INITIAL_PROGRESS_DETAILS);
+            return;
+          }
+
+          if (payload.progress) {
+            const percentValue = Math.min(
+              99,
+              Math.max(0, Math.round(payload.progress.percent ?? 0))
+            );
+            setProgress(percentValue);
+            setProgressDetails({
+              percent: payload.progress.percent ?? percentValue,
+              totalSize: payload.progress.totalSize ?? null,
+              currentSpeed: payload.progress.currentSpeed ?? null,
+              eta: payload.progress.eta ?? null,
+              downloaded: payload.progress.downloaded ?? null,
+              statusText: payload.progress.statusText ?? payload.status ?? 'downloading',
+            });
+          }
+
+          if (payload.fileName) {
+            setDownloadFileName(payload.fileName);
+          }
+        };
+
+        eventSource.onerror = () => {
+          setError('Connection to the server was interrupted. Please try again.');
+          setStatus(STATUS_READY);
+          setStatusMessage('Select a format to download.');
+          setProgress(60);
+          setDownloadId(null);
+          setIsDownloadReady(false);
+          setDownloadFileName('');
+          setProgressDetails(INITIAL_PROGRESS_DETAILS);
+          closeDownloadStream();
+        };
       } catch (downloadError) {
         if (downloadError.name === 'CanceledError') {
           return;
@@ -214,12 +349,40 @@ export function useDownloader() {
         setStatus(STATUS_READY);
         setStatusMessage('Select a format to download.');
         setProgress(60);
+        setDownloadId(null);
+        setIsDownloadReady(false);
+        setDownloadFileName('');
+        setProgressDetails(INITIAL_PROGRESS_DETAILS);
+        closeDownloadStream();
       } finally {
         downloadAbortControllerRef.current = null;
       }
     },
-    [url, validation.isValid]
+    [
+      url,
+      validation.isValid,
+      closeDownloadStream,
+    ]
   );
+
+  const handleDownloadNow = useCallback(() => {
+    if (!downloadId) {
+      return;
+    }
+
+    const downloadUrl = buildDownloadFileUrl(downloadId);
+
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.download = downloadFileName || '';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    setStatusMessage('Your download should start shortly.');
+  }, [downloadId, downloadFileName]);
 
   return {
     url,
@@ -230,9 +393,14 @@ export function useDownloader() {
     validation,
     isProcessing,
     videoInfo,
+    downloadId,
+    progressDetails,
+    isDownloadReady,
+    downloadFileName,
     handleUrlChange,
     handleSubmit,
     handleFormatDownload,
+    handleDownloadNow,
     resetProgress,
   };
 }
