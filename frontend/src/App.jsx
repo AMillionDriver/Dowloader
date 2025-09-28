@@ -2,6 +2,7 @@ import './App.css';
 import { DownloadForm } from './components/DownloadForm';
 import { ErrorMessage } from './components/ErrorMessage';
 import { StatusIndicator } from './components/StatusIndicator';
+import { VideoInfoResult } from './components/VideoInfoResult';
 import { useDownloader } from './hooks/useDownloader';
 
 function App() {
@@ -13,8 +14,10 @@ function App() {
     error,
     validation,
     isProcessing,
+    videoInfo,
     handleUrlChange,
     handleSubmit,
+    handleFormatDownload,
     resetProgress,
   } = useDownloader();
 
@@ -44,6 +47,12 @@ function App() {
         />
 
         <ErrorMessage message={error} />
+
+        <VideoInfoResult
+          info={videoInfo}
+          onDownload={handleFormatDownload}
+          isBusy={isProcessing}
+        />
       </main>
 
       <footer className="page__footer">

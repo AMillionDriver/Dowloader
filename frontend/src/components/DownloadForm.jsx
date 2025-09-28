@@ -8,9 +8,13 @@ export function DownloadForm({
   onUrlChange,
   onSubmit,
 }) {
-  const helperMessage = validation.isValid
-    ? 'Paste a video link from TikTok, Instagram, or Facebook.'
-    : validation.message || 'Enter a valid video link to continue.';
+  const hasUrl = Boolean(url);
+  const helperMessage = hasUrl
+    ? validation.isValid
+      ? 'Click "Cari" to fetch video details and available formats.'
+      : validation.message || 'Enter a valid video link to continue.'
+    : 'Paste a video link to get started.';
+  const showErrorState = hasUrl && !validation.isValid;
 
   return (
     <form className="download-form" onSubmit={onSubmit} noValidate>
@@ -24,11 +28,11 @@ export function DownloadForm({
           value={url}
           onChange={(event) => onUrlChange(event.target.value)}
           placeholder="https://"
-          className={`url-input ${validation.isValid ? '' : 'url-input--invalid'}`}
+          className={`url-input ${showErrorState ? 'url-input--invalid' : ''}`}
           autoComplete="off"
           inputMode="url"
           required
-          aria-invalid={!validation.isValid}
+          aria-invalid={showErrorState}
           aria-describedby="url-helper"
           disabled={isProcessing}
         />
@@ -37,12 +41,12 @@ export function DownloadForm({
           className="download-button"
           disabled={isProcessing || !validation.isValid}
         >
-          {isProcessing ? 'Working...' : 'Download'}
+          {isProcessing ? 'Memproses...' : 'Cari'}
         </button>
       </div>
       <p
         id="url-helper"
-        className={`input-helper ${validation.isValid ? '' : 'input-helper--error'}`}
+        className={`input-helper ${showErrorState ? 'input-helper--error' : ''}`}
       >
         {helperMessage}
       </p>
@@ -71,3 +75,4 @@ DownloadForm.propTypes = {
   onUrlChange: PropTypes.func.isRequired,
   onSubmit: PropTypes.func.isRequired,
 };
+
