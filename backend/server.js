@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   try {
     await initializeDownloader();
+    await import('./src/workers/downloadWorker.js');
     app.listen(PORT, () => {
       logger.info(`Backend listening on port ${PORT}`);
     });
