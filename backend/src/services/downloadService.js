@@ -181,7 +181,7 @@ export async function initialize() {
   if (!fs.existsSync(binaryPath)) {
     logger.info(`Downloading yt-dlp binary to: ${binaryPath}`);
     try {
-      await YTDlpWrap.default.downloadFromGithub(binaryPath);
+      await YTDlpWrap.downloadFromGithub(binaryPath);
       logger.info('yt-dlp binary downloaded successfully.');
     } catch (error) {
       logger.error(error, 'Failed to download yt-dlp binary.');
@@ -191,7 +191,7 @@ export async function initialize() {
     logger.info('yt-dlp binary already exists.');
   }
   // Initialize YTDlpWrap with the binary path
-  ytDlpWrap = new YTDlpWrap.default(binaryPath);
+  ytDlpWrap = new YTDlpWrap(binaryPath);
   await ensureTempDirectory();
 }
 
