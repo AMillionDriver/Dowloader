@@ -1,4 +1,4 @@
-import apiClient from './apiClient';
+import apiClient from './apiClient.js';
 
 export async function requestVideoInfo(url, signal) {
   const response = await apiClient.post(
@@ -21,15 +21,36 @@ export async function prepareServerDownload(url, formatId, signal) {
 }
 
 export async function downloadSubtitle(url, lang) {
-  const response = await apiClient.post(
-    '/api/download-subtitle',
-    { url, lang },
-    {
-      responseType: 'blob',
-    }
-  );
+  try {
+    const response = await apiClient.post(
+      '/api/download-subtitle',
+      { url, lang },
+      {
+        responseType: 'blob',
+      }
+    );
 
-  return response;
+    return response;
+  } catch (error) {
+    const responseData = error?.response?.data;
+
+    if (responseData instanceof Blob) {
+      const text = await responseData.text();
+      let parsed;
+
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseError) {
+        parsed = null;
+      }
+
+      if (parsed?.error) {
+        throw new Error(parsed.error);
+      }
+    }
+
+    throw error;
+  }
 }
 
 function resolveApiBaseUrl() {
