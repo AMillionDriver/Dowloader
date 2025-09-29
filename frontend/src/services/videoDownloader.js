@@ -1,8 +1,15 @@
 import apiClient from './apiClient';
 
+function resolveApiUrl(path) {
+  const baseURL = apiClient.defaults.baseURL ?? window.location.origin;
+  const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+
+  return new URL(normalizedPath, baseURL).toString();
+}
+
 export async function requestVideoInfo(url, signal) {
   const response = await apiClient.post(
-    '/api/info',
+    resolveApiUrl('api/info'),
     { url },
     { signal }
   );
@@ -12,7 +19,7 @@ export async function requestVideoInfo(url, signal) {
 
 export async function prepareServerDownload(url, formatId, signal) {
   const response = await apiClient.post(
-    '/api/prepare-download',
+    resolveApiUrl('api/prepare-download'),
     { url, formatId },
     { signal }
   );
@@ -22,7 +29,7 @@ export async function prepareServerDownload(url, formatId, signal) {
 
 export async function downloadSubtitle(url, lang) {
   const response = await apiClient.post(
-    '/api/download-subtitle',
+    resolveApiUrl('api/download-subtitle'),
     { url, lang },
     {
       responseType: 'blob',
@@ -32,17 +39,10 @@ export async function downloadSubtitle(url, lang) {
   return response;
 }
 
-function resolveApiBaseUrl() {
-  const baseURL = apiClient.defaults.baseURL || '';
-  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
-}
-
 export function createDownloadEventSource(downloadId) {
-  const baseUrl = resolveApiBaseUrl();
-  return new EventSource(`${baseUrl}/api/download-progress/${downloadId}`);
+  return new EventSource(resolveApiUrl(`api/download-progress/${downloadId}`));
 }
 
 export function buildDownloadFileUrl(downloadId) {
-  const baseUrl = resolveApiBaseUrl();
-  return `${baseUrl}/api/get-file/${downloadId}`;
+  return resolveApiUrl(`api/get-file/${downloadId}`);
 }
