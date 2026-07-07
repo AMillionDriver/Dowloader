@@ -2,17 +2,15 @@ import PropTypes from 'prop-types';
 
 export function StatusIndicator({
   status,
-  statusMessage,
+  statusMessage = '',
   progress,
-  progressDetails,
-  isDownloadReady,
-  downloadFileName,
-  hasDownloadId,
-  onDownloadNow,
+  progressDetails = null,
+  downloadFileName = '',
+  isProcessing = false,
+  onCancel = () => {},
   onReset,
 }) {
-  const showProgress = status === 'downloading' && !isDownloadReady;
-  const showDownloadReady = Boolean(isDownloadReady && hasDownloadId);
+  const showProgress = ['preparing', 'downloading', 'saving'].includes(status);
   const hasProgressMeta = Boolean(
     showProgress &&
       (progressDetails?.downloaded ||
@@ -21,7 +19,7 @@ export function StatusIndicator({
         progressDetails?.eta)
   );
 
-  if (!statusMessage && progress === 0 && !showProgress && !showDownloadReady) {
+  if (!statusMessage && progress === 0 && !showProgress) {
     return null;
   }
 
@@ -69,29 +67,27 @@ export function StatusIndicator({
       )}
 
       <div className="status-row">
-        <p className="status-text">{statusMessage}</p>
-        {status === 'success' && (
-          <button type="button" className="reset-button" onClick={onReset}>
-            Download another video
-          </button>
-        )}
-      </div>
-
-      {showDownloadReady && (
-        <div className="download-ready">
-          <div className="download-ready__meta">
-            <p className="download-ready__label">Server download complete</p>
-            {downloadFileName && (
-              <p className="download-ready__filename" title={downloadFileName}>
-                {downloadFileName}
-              </p>
-            )}
-          </div>
-          <button type="button" className="download-now-button" onClick={onDownloadNow}>
-            Download Now
-          </button>
+        <div className="status-copy">
+          <p className="status-text">{statusMessage}</p>
+          {downloadFileName && (
+            <p className="status-filename" title={downloadFileName}>
+              {downloadFileName}
+            </p>
+          )}
         </div>
-      )}
+        <div className="status-actions">
+          {isProcessing && status !== 'fetching-info' && (
+            <button type="button" className="cancel-button" onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+          {['success', 'canceled'].includes(status) && (
+            <button type="button" className="reset-button" onClick={onReset}>
+              Download another video
+            </button>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
@@ -108,18 +104,8 @@ StatusIndicator.propTypes = {
     downloaded: PropTypes.string,
     statusText: PropTypes.string,
   }),
-  isDownloadReady: PropTypes.bool,
   downloadFileName: PropTypes.string,
-  hasDownloadId: PropTypes.bool,
-  onDownloadNow: PropTypes.func,
+  isProcessing: PropTypes.bool,
+  onCancel: PropTypes.func,
   onReset: PropTypes.func.isRequired,
-};
-
-StatusIndicator.defaultProps = {
-  statusMessage: '',
-  progressDetails: null,
-  isDownloadReady: false,
-  downloadFileName: '',
-  hasDownloadId: false,
-  onDownloadNow: () => {},
 };

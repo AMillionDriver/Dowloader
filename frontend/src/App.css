@@ -108,7 +108,8 @@ body {
 }
 
 .download-button,
-.reset-button {
+.reset-button,
+.cancel-button {
   border: none;
   border-radius: var(--radius-medium);
   background: var(--color-primary);
@@ -128,6 +129,16 @@ body {
   background: var(--color-primary-dark);
   transform: translateY(-1px);
   box-shadow: 0 10px 18px -12px rgba(37, 99, 235, 0.7);
+}
+
+.cancel-button {
+  background: #475569;
+}
+
+.cancel-button:hover {
+  background: #334155;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px -12px rgba(71, 85, 105, 0.7);
 }
 
 .download-button:disabled {
@@ -212,9 +223,27 @@ body {
   gap: 0.75rem;
 }
 
+.status-copy {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
 .status-text {
   color: var(--color-text-subtle);
   font-weight: 500;
+}
+
+.status-filename {
+  color: var(--color-text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .progress-details {
@@ -522,7 +551,12 @@ body {
   }
 
   .download-button,
-  .reset-button {
+  .reset-button,
+  .cancel-button {
+    width: 100%;
+  }
+
+  .status-actions {
     width: 100%;
   }
 

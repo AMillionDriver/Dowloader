@@ -1,7 +1,17 @@
-import { v4 as uuidv4 } from 'uuid';
 import { downloadService } from '../services/downloadService.js';
 
-const URL_REGEX = /^(http(s)?:\/\/.)[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)$/;
+function isValidUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value.trim());
+    return ['http:', 'https:'].includes(parsed.protocol);
+  } catch (error) {
+    return false;
+  }
+}
 
 function isValidFormatId(formatId) {
   if (typeof formatId !== 'string') {
@@ -20,19 +30,29 @@ function isValidFormatId(formatId) {
   return true;
 }
 
+function validateVideoUrl(url, res) {
+  if (!url) {
+    res.status(400).json({ error: 'Video URL is required' });
+    return false;
+  }
+
+  if (!isValidUrl(url)) {
+    res.status(400).json({ error: 'Please enter a valid HTTP or HTTPS URL' });
+    return false;
+  }
+
+  return true;
+}
+
 async function getVideoInfo(req, res, next) {
   try {
     const { url } = req.body || {};
 
-    if (!url) {
-      return res.status(400).json({ error: 'Video URL is required' });
+    if (!validateVideoUrl(url, res)) {
+      return undefined;
     }
 
-    if (!URL_REGEX.test(url)) {
-      return res.status(400).json({ error: 'Please enter a valid URL' });
-    }
-
-    const info = await downloadService.fetchVideoInfo(url);
+    const info = await downloadService.fetchVideoInfo(url.trim());
     return res.json(info);
   } catch (error) {
     if (!error.statusCode) {
@@ -48,30 +68,28 @@ async function getVideoInfo(req, res, next) {
   }
 }
 
-async function prepareDownload(req, res, next) {
+async function createDownloadManifest(req, res, next) {
   try {
-    const { url, formatId } = req.body || {};
+    const { url, formatId, formatToken } = req.body || {};
 
-    if (!url) {
-      return res.status(400).json({ error: 'Video URL is required' });
-    }
-
-    if (!URL_REGEX.test(url)) {
-      return res.status(400).json({ error: 'Please enter a valid URL' });
+    if (!validateVideoUrl(url, res)) {
+      return undefined;
     }
 
     if (!isValidFormatId(formatId)) {
       return res.status(400).json({ error: 'A valid formatId is required.' });
     }
 
-    const downloadId = uuidv4();
-    await downloadService.queueDownload(downloadId, url.trim(), formatId.trim());
-
-    return res.status(202).json({ downloadId });
+    const manifest = await downloadService.createDownloadManifest(
+      url.trim(),
+      formatId.trim(),
+      formatToken
+    );
+    return res.json(manifest);
   } catch (error) {
     if (!error.statusCode) {
       const wrappedError = new Error(
-        'Failed to start the download process. Please try again in a moment.'
+        'Failed to create a client-side download manifest. Please try another format.'
       );
       wrappedError.statusCode = 502;
       wrappedError.cause = error;
@@ -82,105 +100,87 @@ async function prepareDownload(req, res, next) {
   }
 }
 
-function streamDownloadProgress(req, res) {
-  const { downloadId } = req.params;
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  if (typeof res.flushHeaders === 'function') {
-    res.flushHeaders();
-  }
-
-  const sendSnapshot = () => {
-    const snapshot = downloadService.getDownloadSnapshot(downloadId);
-
-    if (!snapshot) {
-      res.write('data: ' + JSON.stringify({ status: 'not-found' }) + '\n\n');
-      clearInterval(intervalId);
-      res.end();
-      return;
-    }
-
-    if (snapshot.status === 'error') {
-      res.write('data: ' + JSON.stringify({ status: 'error', error: snapshot.error }) + '\n\n');
-      clearInterval(intervalId);
-      res.end();
-      return;
-    }
-
-    res.write('data: ' + JSON.stringify({
-      status: snapshot.status,
-      progress: snapshot.progress,
-      fileName: snapshot.fileName,
-    }) + '\n\n');
-
-    if (snapshot.status === 'completed') {
-      res.write('data: done\n\n');
-      clearInterval(intervalId);
-      res.end();
-    }
-  };
-
-  const intervalId = setInterval(sendSnapshot, 1000);
-  sendSnapshot();
-
-  req.on('close', () => {
-    clearInterval(intervalId);
-  });
-}
-
-async function getFile(req, res, next) {
+async function downloadChunk(req, res, next) {
   try {
-    const { downloadId } = req.params;
-    const fileInfo = downloadService.getDownloadFileInfo(downloadId);
+    const { token, start, end } = req.body || {};
 
-    if (!fileInfo) {
-      return res.status(404).json({ error: 'Download not found or not ready.' });
+    if (typeof token !== 'string' || !token.trim()) {
+      return res.status(400).json({ error: 'A valid download token is required.' });
     }
 
-    return res.download(fileInfo.filePath, fileInfo.fileName, async (err) => {
-      if (err) {
-        return next(err);
-      }
+    const chunk = await downloadService.fetchProxyChunk(token, start, end);
 
-      await downloadService.cleanupDownload(downloadId);
+    res.status(chunk.statusCode);
+    Object.entries(chunk.headers).forEach(([name, value]) => {
+      res.setHeader(name, value);
     });
+
+    if (!chunk.body) {
+      return res.end();
+    }
+
+    return chunk.body.pipeTo(
+      new WritableStream({
+        write(data) {
+          res.write(Buffer.from(data));
+        },
+        close() {
+          res.end();
+        },
+        abort(error) {
+          next(error);
+        },
+      })
+    ).catch(next);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+
     return next(error);
   }
 }
 
-async function downloadSubtitle(req, res, next) {
+async function downloadStream(req, res, next) {
   try {
-    const { url, lang } = req.body || {};
+    const { url, formatId, formatToken } = req.body || {};
 
-    if (!url) {
-      return res.status(400).json({ error: 'Video URL is required' });
+    if (!validateVideoUrl(url, res)) {
+      return undefined;
     }
 
-    if (!URL_REGEX.test(url)) {
-      return res.status(400).json({ error: 'Please enter a valid URL' });
+    if (!isValidFormatId(formatId)) {
+      return res.status(400).json({ error: 'A valid formatId is required.' });
     }
 
-    if (typeof lang !== 'string' || !lang.trim()) {
-      return res.status(400).json({ error: 'A subtitle language code is required.' });
-    }
+    const fallback = downloadService.createStreamFallback(formatToken, url.trim(), formatId.trim());
 
-    const fileInfo = await downloadService.downloadSubtitleFile(url.trim(), lang.trim());
+    res.status(200);
+    res.setHeader('Content-Type', fallback.mimeType);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Disposition', `attachment; filename="${fallback.fileName}"`);
 
-    return res.download(fileInfo.filePath, fileInfo.fileName, (err) => {
-      downloadService.deleteTemporaryFile(fileInfo.filePath).catch(() => {});
-
-      if (err) {
-        return next(err);
+    fallback.stream.once('error', (error) => {
+      if (!res.headersSent) {
+        return res.status(502).json({
+          error: 'Failed to stream media through yt-dlp.',
+          code: 'STREAM_FALLBACK_FAILED',
+        });
       }
 
-      return undefined;
+      return next(error);
     });
+
+    return fallback.stream.pipe(res);
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ error: error.message });
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+      });
     }
 
     return next(error);
@@ -189,8 +189,7 @@ async function downloadSubtitle(req, res, next) {
 
 export const downloadController = {
   getVideoInfo,
-  prepareDownload,
-  streamDownloadProgress,
-  getFile,
-  downloadSubtitle,
+  createDownloadManifest,
+  downloadChunk,
+  downloadStream,
 };

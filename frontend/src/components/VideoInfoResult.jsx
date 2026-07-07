@@ -9,7 +9,6 @@ function formatDuration(seconds, fallback) {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const secs = totalSeconds % 60;
-
   const parts = [minutes.toString().padStart(2, '0'), secs.toString().padStart(2, '0')];
 
   if (hours > 0) {
@@ -17,6 +16,23 @@ function formatDuration(seconds, fallback) {
   }
 
   return parts.join(':');
+}
+
+function formatBytes(bytes) {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return 'Unknown';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 const browserLanguage =
@@ -39,7 +55,11 @@ function getLanguageLabel(code) {
   }
 }
 
-function FormatsTable({ title, emptyMessage, formats, onDownload, disabled }) {
+function getSubtitleCode(subtitle) {
+  return typeof subtitle === 'string' ? subtitle : subtitle.lang;
+}
+
+function FormatsTable({ title, emptyMessage, formats, onDownload, disabled = false }) {
   return (
     <section className="format-section">
       <h3>{title}</h3>
@@ -50,6 +70,7 @@ function FormatsTable({ title, emptyMessage, formats, onDownload, disabled }) {
               <tr>
                 <th scope="col">Resolution</th>
                 <th scope="col">Ext</th>
+                <th scope="col">Size</th>
                 <th scope="col">Note</th>
                 <th scope="col" className="format-table__actions">
                   <span className="sr-only">Actions</span>
@@ -61,7 +82,8 @@ function FormatsTable({ title, emptyMessage, formats, onDownload, disabled }) {
                 <tr key={format.formatId}>
                   <td data-label="Resolution">{format.resolution || 'Unknown'}</td>
                   <td data-label="Ext">{format.ext}</td>
-                  <td data-label="Note">{format.note || '—'}</td>
+                  <td data-label="Size">{formatBytes(format.fileSize)}</td>
+                  <td data-label="Note">{format.note || '-'}</td>
                   <td className="format-table__actions">
                     <button
                       type="button"
@@ -94,17 +116,22 @@ FormatsTable.propTypes = {
       ext: PropTypes.string.isRequired,
       type: PropTypes.oneOf(['video', 'audio']).isRequired,
       note: PropTypes.string,
+      fileSize: PropTypes.number,
+      mimeType: PropTypes.string,
+      hasAudio: PropTypes.bool,
+      hasVideo: PropTypes.bool,
     })
   ).isRequired,
   onDownload: PropTypes.func.isRequired,
   disabled: PropTypes.bool,
 };
 
-FormatsTable.defaultProps = {
-  disabled: false,
-};
-
-export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }) {
+export function VideoInfoResult({
+  info = null,
+  onDownload,
+  onSubtitleDownload = () => {},
+  isBusy = false,
+}) {
   if (!info) {
     return null;
   }
@@ -135,6 +162,10 @@ export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }
   );
 
   const durationDisplay = info.durationFormatted || formatDuration(info.duration);
+  const subtitleLabels = availableSubtitles
+    .map((subtitle) => getLanguageLabel(getSubtitleCode(subtitle)))
+    .filter(Boolean)
+    .join(', ');
 
   return (
     <section className="video-result" aria-label="Video details">
@@ -154,9 +185,9 @@ export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }
               <span className="video-result__label">Duration:</span> {durationDisplay}
             </p>
           )}
-          {info.subtitles?.length > 0 && (
+          {subtitleLabels && (
             <p className="video-result__subtitles">
-              <span className="video-result__label">Subtitles:</span> {info.subtitles.join(', ')}
+              <span className="video-result__label">Subtitles:</span> {subtitleLabels}
             </p>
           )}
         </div>
@@ -166,19 +197,23 @@ export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }
         <section className="subtitle-section" aria-label="Available subtitles">
           <h3>Available Subtitles</h3>
           <ul className="subtitle-list">
-            {availableSubtitles.map((code) => (
-              <li key={code} className="subtitle-list__item">
-                <span className="subtitle-list__label">{getLanguageLabel(code)}</span>
-                <button
-                  type="button"
-                  className="subtitle-download-button"
-                  onClick={() => onSubtitleDownload(code)}
-                  disabled={isBusy}
-                >
-                  Download
-                </button>
-              </li>
-            ))}
+            {availableSubtitles.map((subtitle) => {
+              const code = getSubtitleCode(subtitle);
+
+              return (
+                <li key={code} className="subtitle-list__item">
+                  <span className="subtitle-list__label">{getLanguageLabel(code)}</span>
+                  <button
+                    type="button"
+                    className="subtitle-download-button"
+                    onClick={() => onSubtitleDownload(subtitle)}
+                    disabled={isBusy}
+                  >
+                    Download
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -186,7 +221,7 @@ export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }
       <div className="video-result__formats">
         <FormatsTable
           title="Video Formats"
-          emptyMessage="No downloadable video formats were found."
+          emptyMessage="No proxied single-file video formats were found."
           formats={videoFormats}
           onDownload={onDownload}
           disabled={isBusy}
@@ -194,7 +229,7 @@ export function VideoInfoResult({ info, onDownload, onSubtitleDownload, isBusy }
 
         <FormatsTable
           title="Audio Only"
-          emptyMessage="No audio-only formats are available."
+          emptyMessage="No proxied audio-only formats are available."
           formats={audioFormats}
           onDownload={onDownload}
           disabled={isBusy}
@@ -217,18 +252,25 @@ VideoInfoResult.propTypes = {
         ext: PropTypes.string.isRequired,
         type: PropTypes.oneOf(['video', 'audio']).isRequired,
         note: PropTypes.string,
+        fileSize: PropTypes.number,
+        mimeType: PropTypes.string,
+        hasAudio: PropTypes.bool,
+        hasVideo: PropTypes.bool,
       })
     ),
-    subtitles: PropTypes.arrayOf(PropTypes.string),
+    subtitles: PropTypes.arrayOf(
+      PropTypes.oneOfType([
+        PropTypes.string,
+        PropTypes.shape({
+          lang: PropTypes.string.isRequired,
+          ext: PropTypes.string,
+          url: PropTypes.string.isRequired,
+          fileName: PropTypes.string,
+        }),
+      ])
+    ),
   }),
   onDownload: PropTypes.func.isRequired,
   onSubtitleDownload: PropTypes.func,
   isBusy: PropTypes.bool,
 };
-
-VideoInfoResult.defaultProps = {
-  info: null,
-  onSubtitleDownload: () => {},
-  isBusy: false,
-};
-

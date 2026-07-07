@@ -1,92 +1,93 @@
 # Social Media Video Downloader
 
-A fullstack web application for downloading videos from TikTok, Instagram, and Facebook.
+A stateless fullstack downloader for TikTok, Instagram, and Facebook links.
+
+The backend resolves metadata and direct media URLs with `yt-dlp`. The browser downloads media in chunks through a stateless server proxy, joins the chunks locally, and saves the file on the user's device. The server streams byte ranges but does not store download files, progress, history, jobs, or temporary media.
 
 ## Features
 
-- Support for TikTok, Instagram, and Facebook videos
-- Simple and clean user interface
-- Progress tracking for downloads
-- Error handling and validation
+- TikTok, Instagram, and Facebook URL lookup
+- Single-file video and audio format listing
+- Server-proxied chunk downloads with client-side progress
+- File System Access API support for large files in Chrome and Edge
+- Blob download fallback for browsers without direct disk streaming support
+- Direct subtitle links when a platform exposes them
 
-## Project Structure
+## Architecture
 
-```
-video-downloader/
-├── frontend/           # React.js frontend (Vite)
-│   ├── src/
-│   │   ├── App.jsx    # Main application component
-│   │   ├── App.css    # Styles
-│   │   └── main.jsx   # Entry point
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.js
-│
-└── backend/           # Node.js + Express backend
-    ├── server.js     # Express server setup
-    ├── utils.js      # Helper functions
-    ├── package.json
-    └── .env.example  # Environment variable template
+```text
+frontend/
+  src/
+    components/              React UI
+    hooks/useDownloader.js   Client-side download state machine
+    services/                API client and browser download runtime
+
+backend/
+  src/
+    controllers/             Request validation and API handlers
+    routes/                  Express API routes
+    services/                yt-dlp metadata and manifest resolver
 ```
 
-## Setup and Installation
+## API
+
+### `POST /api/info`
+
+Request:
+
+```json
+{ "url": "https://example.com/video" }
+```
+
+Returns video metadata, single-file formats, and direct subtitle entries when available.
+
+### `POST /api/download-manifest`
+
+Request:
+
+```json
+{ "url": "https://example.com/video", "formatId": "18" }
+```
+
+Returns a proxied client download manifest with file metadata, chunk size, byte ranges, a signed stateless token, and the chunk endpoint.
+
+### `POST /api/download-chunk`
+
+Request:
+
+```json
+{ "token": "signed-token", "start": 0, "end": 8388607 }
+```
+
+Streams the requested byte range from the platform CDN through the backend without saving it to disk.
+
+## Setup
 
 ### Backend
 
-1. Navigate to the backend directory and install dependencies:
-   ```bash
-   cd backend
-   npm install
-   ```
+```bash
+cd backend
+npm install
+npm run dev
+```
 
-2. Copy the environment template and update values as needed:
-   ```bash
-   cp .env.example .env
-   # (optional) edit .env to set PORT or CLIENT_ORIGIN
-   ```
-
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-The backend server will run on the configured `PORT` (defaults to `5000`).
+The backend defaults to `http://localhost:5000`. Set `PORT` or `CLIENT_ORIGIN` in `backend/.env` when needed.
 
 ### Frontend
 
-1. Navigate to the frontend directory and install dependencies:
-   ```bash
-   cd frontend
-   npm install
-   ```
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-2. (Optional) Copy the provided environment example and adjust if necessary:
-   ```bash
-   cp .env.example .env
-   ```
+Vite defaults to `http://localhost:5173`. Set `VITE_API_BASE_URL` in `frontend/.env` if the backend runs elsewhere.
 
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
+## Notes
 
-By default Vite serves the frontend on http://localhost:5173. Ensure the backend's `CLIENT_ORIGIN` matches this value.
-
-## Important Note
-
-The video extraction functions in `backend/utils.js` are currently placeholder implementations. You'll need to implement proper video extraction logic using appropriate APIs or third-party services for each platform (TikTok, Instagram, and Facebook).
-
-## Optional: Adding MongoDB
-
-To add MongoDB support for storing download history:
-
-1. Install additional dependencies in the backend:
-   ```bash
-   npm install mongoose
-   ```
-
-2. Create a `models` directory in the backend and add your schema
-3. Update the download endpoint to store download history
+- V1.1 uses stateless server proxy downloads by default to avoid browser CDN CORS failures.
+- V1.1 only shows single-file formats. Separate audio/video muxing is intentionally out of scope.
+- Download tokens expire after 15 minutes; the frontend refreshes the manifest once if a token or upstream media URL expires mid-download.
 
 ## License
 

@@ -1,18 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { SUPPORTED_PLATFORMS } from '../constants/platforms';
 import {
-  buildDownloadFileUrl,
-  createDownloadEventSource,
-  prepareServerDownload,
+  requestDownloadManifest,
   requestVideoInfo,
-  downloadSubtitle as downloadSubtitleRequest,
+  resolveApiBaseUrl,
 } from '../services/videoDownloader';
+import {
+  buildSuggestedFileName,
+  downloadDirectResource,
+  downloadManifest,
+  downloadStreamFallback,
+  selectFileSystemTarget,
+  STREAM_FALLBACK_CODE,
+} from '../services/clientDownloaderRuntime';
 
 const STATUS_IDLE = 'idle';
 const STATUS_FETCHING_INFO = 'fetching-info';
 const STATUS_READY = 'ready';
+const STATUS_PREPARING = 'preparing';
 const STATUS_DOWNLOADING = 'downloading';
+const STATUS_SAVING = 'saving';
 const STATUS_SUCCESS = 'success';
+const STATUS_CANCELED = 'canceled';
 
 const INITIAL_PROGRESS_DETAILS = {
   percent: 0,
@@ -23,26 +32,29 @@ const INITIAL_PROGRESS_DETAILS = {
   statusText: '',
 };
 
-function extractFileName(contentDisposition) {
-  if (!contentDisposition || typeof contentDisposition !== 'string') {
+function formatBytes(bytes) {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
     return null;
   }
 
-  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1]);
-    } catch (error) {
-      return utf8Match[1];
-    }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
   }
 
-  const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
-  if (asciiMatch?.[1]) {
-    return asciiMatch[1];
-  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
 
-  return null;
+function getAbortError() {
+  return new DOMException('Download canceled.', 'AbortError');
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
 }
 
 function matchPlatform(url) {
@@ -94,55 +106,52 @@ export function useDownloader() {
   const [error, setError] = useState('');
   const [validation, setValidation] = useState({ isValid: false, message: '' });
   const [videoInfo, setVideoInfo] = useState(null);
-  const [downloadId, setDownloadId] = useState(null);
-  const [isDownloadReady, setIsDownloadReady] = useState(false);
   const [downloadFileName, setDownloadFileName] = useState('');
   const [progressDetails, setProgressDetails] = useState(INITIAL_PROGRESS_DETAILS);
   const infoAbortControllerRef = useRef(null);
   const downloadAbortControllerRef = useRef(null);
-  const eventSourceRef = useRef(null);
+  const downloadLockRef = useRef(false);
 
   const isProcessing = useMemo(
-    () => [STATUS_FETCHING_INFO, STATUS_DOWNLOADING].includes(status),
+    () =>
+      [
+        STATUS_FETCHING_INFO,
+        STATUS_PREPARING,
+        STATUS_DOWNLOADING,
+        STATUS_SAVING,
+      ].includes(status),
     [status]
   );
 
-  const handleUrlChange = useCallback((value) => {
-    if (infoAbortControllerRef.current) {
-      infoAbortControllerRef.current.abort();
-      infoAbortControllerRef.current = null;
-    }
-
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-
-    setUrl(value);
-    setValidation(validateUrl(value));
-    setError('');
-    setVideoInfo(null);
-    setStatus(STATUS_IDLE);
-    setStatusMessage('');
+  const resetDownloadState = useCallback(() => {
     setProgress(0);
-    setDownloadId(null);
-    setIsDownloadReady(false);
     setDownloadFileName('');
     setProgressDetails(INITIAL_PROGRESS_DETAILS);
   }, []);
 
-  const closeDownloadStream = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-  }, []);
+  const handleUrlChange = useCallback(
+    (value) => {
+      if (infoAbortControllerRef.current) {
+        infoAbortControllerRef.current.abort();
+        infoAbortControllerRef.current = null;
+      }
 
-  useEffect(() => {
-    return () => {
-      closeDownloadStream();
-    };
-  }, [closeDownloadStream]);
+      if (downloadAbortControllerRef.current) {
+        downloadAbortControllerRef.current.abort();
+        downloadAbortControllerRef.current = null;
+      }
+      downloadLockRef.current = false;
+
+      setUrl(value);
+      setValidation(validateUrl(value));
+      setError('');
+      setVideoInfo(null);
+      setStatus(STATUS_IDLE);
+      setStatusMessage('');
+      resetDownloadState();
+    },
+    [resetDownloadState]
+  );
 
   const resetProgress = useCallback(() => {
     if (infoAbortControllerRef.current) {
@@ -154,21 +163,16 @@ export function useDownloader() {
       downloadAbortControllerRef.current.abort();
       downloadAbortControllerRef.current = null;
     }
-
-    closeDownloadStream();
+    downloadLockRef.current = false;
 
     setUrl('');
     setVideoInfo(null);
     setStatus(STATUS_IDLE);
-    setProgress(0);
     setStatusMessage('');
     setError('');
     setValidation({ isValid: false, message: '' });
-    setDownloadId(null);
-    setIsDownloadReady(false);
-    setDownloadFileName('');
-    setProgressDetails(INITIAL_PROGRESS_DETAILS);
-  }, [closeDownloadStream]);
+    resetDownloadState();
+  }, [resetDownloadState]);
 
   const handleSubmit = useCallback(
     async (event) => {
@@ -196,7 +200,7 @@ export function useDownloader() {
         setStatus(STATUS_FETCHING_INFO);
         setStatusMessage('Fetching video information...');
         setProgress(30);
-
+        resetDownloadState();
         setUrl(trimmedUrl);
 
         const info = await requestVideoInfo(trimmedUrl, controller.signal);
@@ -205,11 +209,11 @@ export function useDownloader() {
         const platformName = result.platform?.name;
         setStatus(STATUS_READY);
         setStatusMessage(
-          `Select a format to download${platformName ? ` (${platformName})` : ''}.`
+          `Select a proxied format to download${platformName ? ` (${platformName})` : ''}.`
         );
         setProgress(60);
       } catch (requestError) {
-        if (requestError.name === 'CanceledError') {
+        if (isAbortError(requestError) || requestError.name === 'CanceledError') {
           return;
         }
 
@@ -222,11 +226,15 @@ export function useDownloader() {
         infoAbortControllerRef.current = null;
       }
     },
-    [url]
+    [resetDownloadState, url]
   );
 
   const handleFormatDownload = useCallback(
     async (format) => {
+      if (downloadLockRef.current) {
+        return;
+      }
+
       if (!format?.formatId) {
         setError('A valid format selection is required.');
         return;
@@ -248,213 +256,191 @@ export function useDownloader() {
         downloadAbortControllerRef.current.abort();
       }
 
-      closeDownloadStream();
-
+      downloadLockRef.current = true;
       const controller = new AbortController();
       downloadAbortControllerRef.current = controller;
+      const suggestedName = buildSuggestedFileName(videoInfo?.title, format.ext);
 
       try {
         setError('');
-        setStatus(STATUS_DOWNLOADING);
-        setStatusMessage('Preparing your download...');
+        setStatus(STATUS_PREPARING);
+        setStatusMessage('Preparing proxied download...');
         setProgress(0);
-        setIsDownloadReady(false);
-        setDownloadFileName('');
+        setDownloadFileName(suggestedName);
         setProgressDetails({
           ...INITIAL_PROGRESS_DETAILS,
-          statusText: 'pending',
+          statusText: 'preparing',
         });
 
-        const data = await prepareServerDownload(
+        const fileTarget = await selectFileSystemTarget({
+          suggestedName,
+          mimeType: format.mimeType || undefined,
+        });
+
+        if (controller.signal.aborted) {
+          throw getAbortError();
+        }
+
+        const manifest = await requestDownloadManifest(
           trimmedUrl,
           format.formatId,
+          format.formatToken,
           controller.signal
         );
 
-        if (!data?.downloadId) {
-          throw new Error('The server did not return a download identifier. Please try again.');
+        if (!manifest?.downloadToken || !manifest?.chunkEndpoint || !manifest?.sizeBytes) {
+          throw new Error('The server returned an incomplete download manifest.');
         }
 
-        setDownloadId(data.downloadId);
-        setStatusMessage('Downloading to server...');
+        setDownloadFileName(manifest.fileName || suggestedName);
+        setStatus(STATUS_DOWNLOADING);
+        setStatusMessage(
+          fileTarget
+            ? 'Downloading through the server proxy to your selected file...'
+            : 'Downloading through the server proxy in your browser memory...'
+        );
 
-        const eventSource = createDownloadEventSource(data.downloadId);
-        eventSourceRef.current = eventSource;
+        const startedAt = Date.now();
+        const handleProgress = ({ downloadedBytes, totalBytes, percent }) => {
+          const elapsedSeconds = Math.max(1, (Date.now() - startedAt) / 1000);
+          const bytesPerSecond = downloadedBytes / elapsedSeconds;
+          const remainingBytes = Math.max(0, totalBytes - downloadedBytes);
+          const etaSeconds = bytesPerSecond > 0
+            ? Math.ceil(remainingBytes / bytesPerSecond)
+            : null;
+          const isSaving = percent >= 100;
 
-        eventSource.onmessage = (event) => {
-          if (event.data === 'done') {
-            setIsDownloadReady(true);
-            setStatus(STATUS_SUCCESS);
-            setStatusMessage('Download ready! Click "Download Now" to save the file.');
-            setProgress(100);
-            setProgressDetails((previous) => ({
-              ...previous,
-              percent: 100,
-              statusText: 'completed',
-              eta: '00:00',
-            }));
-            closeDownloadStream();
-            return;
+          if (isSaving) {
+            setStatus(STATUS_SAVING);
+            setStatusMessage('Saving file to your device...');
           }
-
-          let payload;
-          try {
-            payload = JSON.parse(event.data);
-          } catch (parseError) {
-            console.warn('Unable to parse progress payload', parseError);
-            return;
-          }
-
-          if (payload.status === 'not-found') {
-            setError('Download session was not found on the server. Please try again.');
-            setStatus(STATUS_READY);
-            setStatusMessage('Select a format to download.');
-            setProgress(60);
-            closeDownloadStream();
-            setDownloadId(null);
-            setIsDownloadReady(false);
-            setDownloadFileName('');
-            setProgressDetails(INITIAL_PROGRESS_DETAILS);
-            return;
-          }
-
-          if (payload.status === 'error') {
-            setError(payload.error || 'Download failed on the server. Please retry.');
-            setStatus(STATUS_READY);
-            setStatusMessage('Select a format to download.');
-            setProgress(60);
-            closeDownloadStream();
-            setDownloadId(null);
-            setIsDownloadReady(false);
-            setDownloadFileName('');
-            setProgressDetails(INITIAL_PROGRESS_DETAILS);
-            return;
-          }
-
-          if (payload.progress) {
-            const percentValue = Math.min(
-              99,
-              Math.max(0, Math.round(payload.progress.percent ?? 0))
-            );
-            setProgress(percentValue);
-            setProgressDetails({
-              percent: payload.progress.percent ?? percentValue,
-              totalSize: payload.progress.totalSize ?? null,
-              currentSpeed: payload.progress.currentSpeed ?? null,
-              eta: payload.progress.eta ?? null,
-              downloaded: payload.progress.downloaded ?? null,
-              statusText: payload.progress.statusText ?? payload.status ?? 'downloading',
-            });
-          }
-
-          if (payload.fileName) {
-            setDownloadFileName(payload.fileName);
-          }
+          setProgress(Math.round(percent));
+          setProgressDetails({
+            percent,
+            totalSize: formatBytes(totalBytes),
+            currentSpeed: bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : null,
+            eta: etaSeconds === null ? null : `${etaSeconds}s`,
+            downloaded: formatBytes(downloadedBytes),
+            statusText: isSaving ? 'saving' : 'downloading',
+          });
         };
 
-        eventSource.onerror = () => {
-          setError('Connection to the server was interrupted. Please try again.');
-          setStatus(STATUS_READY);
-          setStatusMessage('Select a format to download.');
-          setProgress(60);
-          setDownloadId(null);
-          setIsDownloadReady(false);
-          setDownloadFileName('');
-          setProgressDetails(INITIAL_PROGRESS_DETAILS);
-          closeDownloadStream();
-        };
+        try {
+          await downloadManifest(manifest, {
+            apiBaseUrl: resolveApiBaseUrl(),
+            fileTarget,
+            signal: controller.signal,
+            refreshManifest: async () => {
+              setStatusMessage('Refreshing expired media link...');
+              return requestDownloadManifest(
+                trimmedUrl,
+                format.formatId,
+                format.formatToken,
+                controller.signal
+              );
+            },
+            onProgress: handleProgress,
+          });
+        } catch (downloadError) {
+          if (downloadError?.code !== STREAM_FALLBACK_CODE) {
+            throw downloadError;
+          }
+
+          setStatus(STATUS_DOWNLOADING);
+          setStatusMessage('Range proxy was blocked. Streaming through yt-dlp fallback...');
+          await downloadStreamFallback({
+            streamEndpoint: '/api/download-stream',
+            request: {
+              url: trimmedUrl,
+              formatId: format.formatId,
+              formatToken: format.formatToken,
+            },
+            fileName: manifest.fileName || suggestedName,
+            mimeType: manifest.mimeType || format.mimeType,
+            sizeBytes: manifest.sizeBytes,
+          }, {
+            apiBaseUrl: resolveApiBaseUrl(),
+            fileTarget,
+            signal: controller.signal,
+            onProgress: handleProgress,
+          });
+        }
+
+        if (controller.signal.aborted) {
+          throw getAbortError();
+        }
+
+        setProgress(100);
+        setProgressDetails((previous) => ({
+          ...previous,
+          percent: 100,
+          statusText: 'saving',
+        }));
+
+        setStatus(STATUS_SUCCESS);
+        setStatusMessage('Download completed and saved on your device.');
+        setProgressDetails((previous) => ({
+          ...previous,
+          statusText: 'completed',
+          eta: '0s',
+        }));
       } catch (downloadError) {
-        if (downloadError.name === 'CanceledError') {
+        if (isAbortError(downloadError) || downloadError.name === 'CanceledError') {
+          setStatus(STATUS_CANCELED);
+          setStatusMessage('Download canceled.');
+          setProgress(0);
+          setProgressDetails(INITIAL_PROGRESS_DETAILS);
           return;
         }
 
         setError(downloadError.message);
         setStatus(STATUS_READY);
-        setStatusMessage('Select a format to download.');
+        setStatusMessage('Select a proxied format to download.');
         setProgress(60);
-        setDownloadId(null);
-        setIsDownloadReady(false);
         setDownloadFileName('');
         setProgressDetails(INITIAL_PROGRESS_DETAILS);
-        closeDownloadStream();
       } finally {
         downloadAbortControllerRef.current = null;
+        downloadLockRef.current = false;
       }
     },
-    [
-      url,
-      validation.isValid,
-      closeDownloadStream,
-    ]
+    [url, validation.isValid, videoInfo?.title]
   );
 
-  const handleDownloadNow = useCallback(() => {
-    if (!downloadId) {
-      return;
+  const handleCancelDownload = useCallback(() => {
+    if (downloadAbortControllerRef.current) {
+      downloadAbortControllerRef.current.abort();
     }
-
-    const downloadUrl = buildDownloadFileUrl(downloadId);
-
-    const anchor = document.createElement('a');
-    anchor.href = downloadUrl;
-    anchor.target = '_blank';
-    anchor.rel = 'noopener noreferrer';
-    anchor.download = downloadFileName || '';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-
-    setStatusMessage('Your download should start shortly.');
-  }, [downloadId, downloadFileName]);
+  }, []);
 
   const handleSubtitleDownload = useCallback(
-    async (subtitleLang) => {
-      const trimmedLang = typeof subtitleLang === 'string' ? subtitleLang.trim() : '';
+    async (subtitle) => {
+      const subtitleInfo =
+        typeof subtitle === 'string'
+          ? videoInfo?.subtitles?.find((entry) => entry.lang === subtitle)
+          : subtitle;
 
-      if (!trimmedLang) {
-        setError('A subtitle language code is required.');
-        return;
-      }
-
-      if (!validation.isValid) {
-        setError('Enter a valid video URL before downloading.');
-        return;
-      }
-
-      const trimmedUrl = url.trim();
-
-      if (!trimmedUrl) {
-        setError('Enter a valid video URL before downloading.');
+      if (!subtitleInfo?.url) {
+        setError('This subtitle is not available as a direct client-side download.');
         return;
       }
 
       try {
         setError('');
-        setStatusMessage(`Requesting ${trimmedLang} subtitles...`);
+        setStatusMessage(`Downloading ${subtitleInfo.lang} subtitles...`);
 
-        const response = await downloadSubtitleRequest(trimmedUrl, trimmedLang);
-        const { headers } = response;
-        const fileName =
-          extractFileName(headers?.['content-disposition']) || `subtitle-${trimmedLang}.vtt`;
-        const blob = new Blob([response.data], {
-          type: headers?.['content-type'] || 'text/vtt',
+        await downloadDirectResource({
+          sourceUrl: subtitleInfo.url,
+          fileName: subtitleInfo.fileName || `subtitle-${subtitleInfo.lang}.${subtitleInfo.ext || 'vtt'}`,
+          mimeType: subtitleInfo.ext === 'srt' ? 'application/x-subrip' : 'text/vtt',
         });
-        const objectUrl = URL.createObjectURL(blob);
 
-        const anchor = document.createElement('a');
-        anchor.href = objectUrl;
-        anchor.download = fileName;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-
-        URL.revokeObjectURL(objectUrl);
-        setStatusMessage(`Subtitle download for ${trimmedLang} should start shortly.`);
+        setStatusMessage(`Subtitle download for ${subtitleInfo.lang} should start shortly.`);
       } catch (subtitleError) {
         setError(subtitleError.message);
       }
     },
-    [url, validation.isValid]
+    [videoInfo?.subtitles]
   );
 
   return {
@@ -466,16 +452,13 @@ export function useDownloader() {
     validation,
     isProcessing,
     videoInfo,
-    downloadId,
     progressDetails,
-    isDownloadReady,
     downloadFileName,
     handleUrlChange,
     handleSubmit,
     handleFormatDownload,
-    handleDownloadNow,
+    handleCancelDownload,
     handleSubtitleDownload,
     resetProgress,
   };
 }
-

@@ -15,20 +15,18 @@ function App() {
     validation,
     isProcessing,
     videoInfo,
-    downloadId,
     progressDetails,
-    isDownloadReady,
     downloadFileName,
     handleUrlChange,
     handleSubmit,
     handleFormatDownload,
-    handleDownloadNow,
+    handleCancelDownload,
     handleSubtitleDownload,
     resetProgress,
   } = useDownloader();
 
   const shouldHideFormats =
-    !videoInfo || status === 'downloading' || isDownloadReady;
+    !videoInfo || ['preparing', 'downloading', 'saving'].includes(status);
 
   return (
     <div className="page">
@@ -53,10 +51,9 @@ function App() {
           statusMessage={statusMessage}
           progress={progress}
           progressDetails={progressDetails}
-          isDownloadReady={isDownloadReady}
           downloadFileName={downloadFileName}
-          hasDownloadId={Boolean(downloadId)}
-          onDownloadNow={handleDownloadNow}
+          isProcessing={isProcessing}
+          onCancel={handleCancelDownload}
           onReset={resetProgress}
         />
 
@@ -74,8 +71,8 @@ function App() {
 
       <footer className="page__footer">
         <p>
-          We never store your links. Downloads happen directly between your
-          browser and the platform&apos;s CDN.
+          We never store your files. Downloads are streamed through the server
+          in chunks and saved on your device.
         </p>
       </footer>
     </div>

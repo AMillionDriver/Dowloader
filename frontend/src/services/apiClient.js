@@ -14,7 +14,10 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.data?.error) {
-      return Promise.reject(new Error(error.response.data.error));
+      const wrappedError = new Error(error.response.data.error);
+      wrappedError.code = error.response.data.code;
+      wrappedError.status = error.response.status;
+      return Promise.reject(wrappedError);
     }
 
     if (error.code === 'ECONNABORTED') {

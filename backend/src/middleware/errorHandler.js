@@ -7,9 +7,15 @@ function errorHandler(err, req, res, next) {
   const statusCode = err.statusCode || 500;
   const message = err.message || 'An unexpected server error occurred.';
 
-  res.status(statusCode).json({
+  const payload = {
     error: message,
-  });
+  };
+
+  if (err.code) {
+    payload.code = err.code;
+  }
+
+  res.status(statusCode).json(payload);
 }
 
 export default errorHandler;

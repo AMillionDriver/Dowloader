@@ -5,18 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon server.js | pino-pretty",
-    "start": "node server.js"
+    "dev:restart": "npm run dev:stop-port && npm run dev",
+    "dev:stop-port": "node scripts/stopPort.js 5000",
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
-    "bullmq": "^5.58.9",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "helmet": "^7.1.0",
-    "ioredis": "^5.8.0",
-    "node-cache": "^5.1.2",
     "pino": "^8.15.0",
-    "uuid": "^9.0.1",
     "yt-dlp-wrap": "^2.3.12"
   },
   "devDependencies": {

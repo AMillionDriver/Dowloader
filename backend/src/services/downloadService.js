@@ -1,17 +1,36 @@
-import YTDlpWrap from 'yt-dlp-wrap';
+import crypto from 'crypto';
+import YTDlpWrapModule from 'yt-dlp-wrap';
 import logger from './logger.js';
 import path from 'path';
 import fs from 'fs';
-import { promises as fsPromises } from 'fs';
-import NodeCache from 'node-cache';
-import { downloadQueue } from '../queues/downloadQueue.js';
 
-// Define a path for the yt-dlp binary within the backend directory
+const YTDlpWrap = YTDlpWrapModule.default ?? YTDlpWrapModule;
 const binaryPath = path.join(process.cwd(), 'yt-dlp.exe');
-const tempDirectory = path.join(process.cwd(), 'temp');
+const DEFAULT_CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
+const DOWNLOAD_TOKEN_TTL_MS = 15 * 60 * 1000;
+const RUNTIME_VERSION = 'client-downloader-v2';
+const CHUNK_ENDPOINT = '/api/download-chunk';
+const TOKEN_VERSION = 1;
+const FORMAT_TOKEN_TYPE = 'format';
+const DOWNLOAD_TOKEN_TYPE = 'download';
+const DEFAULT_TOKEN_SECRET = 'development-download-token-secret';
+const DEFAULT_BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
 let ytDlpWrap;
-const videoInfoCache = new NodeCache({ stdTTL: 3600 });
-const activeDownloads = new Map();
+let ytDlpStreamFactory = null;
 
 function ensureYtDlp() {
   if (!ytDlpWrap) {
@@ -19,99 +38,186 @@ function ensureYtDlp() {
   }
 }
 
-async function ensureTempDirectory() {
-  try {
-    await fsPromises.mkdir(tempDirectory, { recursive: true });
-  } catch (error) {
-    logger.error(error, 'Unable to create temporary download directory.');
-    throw error;
-  }
+function getTokenSecret(secret = process.env.DOWNLOAD_TOKEN_SECRET) {
+  return secret || DEFAULT_TOKEN_SECRET;
 }
 
-function sanitizePercent(value) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0;
-  }
-
-  if (typeof value === 'string') {
-    const numeric = parseFloat(value.replace('%', ''));
-    return Number.isFinite(numeric) ? numeric : 0;
-  }
-
-  return 0;
+function base64UrlEncode(value) {
+  return Buffer.from(value).toString('base64url');
 }
 
-function updateDownloadRecord(id, updates) {
-  const record = activeDownloads.get(id);
-  if (!record) {
-    return;
-  }
-
-  Object.assign(record, updates, { updatedAt: new Date().toISOString() });
+function base64UrlDecode(value) {
+  return Buffer.from(value, 'base64url').toString('utf8');
 }
 
-function updateDownloadProgress(id, progressUpdates) {
-  const record = activeDownloads.get(id);
-  if (!record) {
-    return;
+function createHttpError(message, statusCode, code) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function signPayload(encodedPayload, secret = getTokenSecret()) {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(encodedPayload)
+    .digest('base64url');
+}
+
+function hasValidSignature(encodedPayload, signature, secret = getTokenSecret()) {
+  const expectedSignature = signPayload(encodedPayload, secret);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  const actualBuffer = Buffer.from(String(signature || ''));
+
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return false;
   }
 
-  record.progress = {
-    ...record.progress,
-    ...progressUpdates,
-    percent: sanitizePercent(progressUpdates.percent ?? record.progress.percent),
+  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function signDownloadToken(payload, options = {}) {
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  const expiresAt = typeof options.expiresAt === 'number'
+    ? options.expiresAt
+    : now + DOWNLOAD_TOKEN_TTL_MS;
+  const tokenPayload = {
+    ...payload,
+    tokenType: DOWNLOAD_TOKEN_TYPE,
+    version: TOKEN_VERSION,
+    expiresAt,
   };
-  record.updatedAt = new Date().toISOString();
+  const encodedPayload = base64UrlEncode(JSON.stringify(tokenPayload));
+  const signature = signPayload(encodedPayload, options.secret);
+
+  return `${encodedPayload}.${signature}`;
 }
 
-async function findDownloadedFile(downloadId) {
+function verifyDownloadToken(token, options = {}) {
+  if (typeof token !== 'string' || !token.includes('.')) {
+    throw createHttpError('Invalid download token.', 401, 'INVALID_TOKEN');
+  }
+
+  const [encodedPayload, signature] = token.split('.');
+
+  if (!encodedPayload || !signature || !hasValidSignature(encodedPayload, signature, options.secret)) {
+    throw createHttpError('Invalid download token.', 401, 'INVALID_TOKEN');
+  }
+
+  let payload;
   try {
-    const entries = await fsPromises.readdir(tempDirectory);
-    for (const file of entries) {
-      if (!file.startsWith(`${downloadId}.`) || file.endsWith('.part')) {
-        continue;
-      }
-
-      const fullPath = path.join(tempDirectory, file);
-      try {
-        const stats = await fsPromises.stat(fullPath);
-        if (stats.isFile()) {
-          return fullPath;
-        }
-      } catch (statError) {
-        if (statError.code !== 'ENOENT') {
-          logger.warn(statError, `Unable to stat downloaded file candidate ${fullPath}`);
-        }
-      }
-    }
-
-    return null;
+    payload = JSON.parse(base64UrlDecode(encodedPayload));
   } catch (error) {
-    logger.error(error, `Unable to locate downloaded file for ${downloadId}`);
-    return null;
+    throw createHttpError('Invalid download token.', 401, 'INVALID_TOKEN');
+  }
+
+  if (payload.version !== TOKEN_VERSION) {
+    throw createHttpError('Invalid download token version.', 401, 'INVALID_TOKEN');
+  }
+
+  if (payload.tokenType !== DOWNLOAD_TOKEN_TYPE) {
+    throw createHttpError('Invalid download token type.', 401, 'INVALID_TOKEN');
+  }
+
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  if (typeof payload.expiresAt !== 'number' || payload.expiresAt <= now) {
+    throw createHttpError('Download token expired.', 409, 'TOKEN_EXPIRED');
+  }
+
+  return payload;
+}
+
+function signFormatToken(payload, options = {}) {
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  const expiresAt = typeof options.expiresAt === 'number'
+    ? options.expiresAt
+    : now + DOWNLOAD_TOKEN_TTL_MS;
+  const tokenPayload = {
+    ...payload,
+    tokenType: FORMAT_TOKEN_TYPE,
+    version: TOKEN_VERSION,
+    expiresAt,
+  };
+  const encodedPayload = base64UrlEncode(JSON.stringify(tokenPayload));
+  const signature = signPayload(encodedPayload, options.secret);
+
+  return `${encodedPayload}.${signature}`;
+}
+
+function verifyFormatToken(token, options = {}) {
+  if (typeof token !== 'string' || !token.includes('.')) {
+    throw createHttpError('Invalid format token.', 401, 'INVALID_FORMAT_TOKEN');
+  }
+
+  const [encodedPayload, signature] = token.split('.');
+
+  if (!encodedPayload || !signature || !hasValidSignature(encodedPayload, signature, options.secret)) {
+    throw createHttpError('Invalid format token.', 401, 'INVALID_FORMAT_TOKEN');
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(base64UrlDecode(encodedPayload));
+  } catch (error) {
+    throw createHttpError('Invalid format token.', 401, 'INVALID_FORMAT_TOKEN');
+  }
+
+  if (payload.version !== TOKEN_VERSION || payload.tokenType !== FORMAT_TOKEN_TYPE) {
+    throw createHttpError('Invalid format token.', 401, 'INVALID_FORMAT_TOKEN');
+  }
+
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  if (typeof payload.expiresAt !== 'number' || payload.expiresAt <= now) {
+    throw createHttpError('Format token expired.', 409, 'FORMAT_TOKEN_EXPIRED');
+  }
+
+  return payload;
+}
+
+function parseYtDlpJson(rawJson) {
+  const parsedJson = rawJson
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))[0];
+
+  if (!parsedJson) {
+    throw new Error('Unable to parse video metadata.');
+  }
+
+  return parsedJson;
+}
+
+function isHttpUrl(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return ['http:', 'https:'].includes(parsed.protocol);
+  } catch (error) {
+    return false;
   }
 }
 
-async function finalizeSuccessfulDownload(downloadId) {
-  const filePath = await findDownloadedFile(downloadId);
-  if (!filePath) {
-    updateDownloadRecord(downloadId, {
-      status: 'error',
-      error: 'The downloaded file could not be located on the server.',
-    });
-    return;
+function isDirectHttpFormat(format) {
+  if (!format?.format_id || !format?.ext || !isHttpUrl(format.url)) {
+    return false;
   }
 
-  const fileName = path.basename(filePath);
-  updateDownloadRecord(downloadId, {
-    status: 'completed',
-    filePath,
-    fileName,
-  });
-  updateDownloadProgress(downloadId, {
-    percent: 100,
-    eta: '00:00',
-  });
+  if (format.ext === 'm3u8' || format.ext === 'm3u') {
+    return false;
+  }
+
+  if (format.protocol && !/^https?$/i.test(format.protocol)) {
+    return false;
+  }
+
+  const hasVideo = format.vcodec && format.vcodec !== 'none';
+  const hasAudio = format.acodec && format.acodec !== 'none';
+
+  return (hasVideo && hasAudio) || (!hasVideo && hasAudio);
 }
 
 function formatDuration(seconds) {
@@ -123,7 +229,6 @@ function formatDuration(seconds) {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const secs = totalSeconds % 60;
-
   const parts = [minutes.toString().padStart(2, '0'), secs.toString().padStart(2, '0')];
 
   if (hours > 0) {
@@ -133,11 +238,47 @@ function formatDuration(seconds) {
   return parts.join(':');
 }
 
-function normalizeFormats(formats = []) {
+function toPositiveInteger(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return Math.round(value);
+}
+
+function getFileSize(format) {
+  return toPositiveInteger(format?.filesize) ?? toPositiveInteger(format?.filesize_approx);
+}
+
+function createFormatPayload(format, parsedJson = {}, sourcePageUrl = '') {
+  const sourceHeaders = {
+    ...(parsedJson.http_headers || {}),
+    ...(format.http_headers || {}),
+  };
+  const mimeType = inferMimeType(format.ext, format);
+  const fileName = buildFileName(parsedJson.title, format.ext);
+
+  return {
+    sourceUrl: format.url,
+    sourcePageUrl,
+    headers: buildProxyHeaders(format.url, sourcePageUrl, sourceHeaders),
+    formatId: String(format.format_id),
+    ext: format.ext,
+    title: parsedJson.title || 'Untitled video',
+    fileName,
+    mimeType,
+    sizeBytes: getFileSize(format),
+    chunkSizeBytes: DEFAULT_CHUNK_SIZE_BYTES,
+  };
+}
+
+function normalizeFormats(formats = [], context = {}) {
   return formats
-    .filter((format) => format?.format_id && format?.ext)
+    .filter(isDirectHttpFormat)
     .map((format) => {
-      const isAudioOnly = format.vcodec === 'none';
+      const hasVideo = format.vcodec && format.vcodec !== 'none';
+      const hasAudio = format.acodec && format.acodec !== 'none';
+      const isAudioOnly = !hasVideo && hasAudio;
       const resolution = isAudioOnly
         ? format.abr
           ? `${format.abr} kbps`
@@ -146,37 +287,448 @@ function normalizeFormats(formats = []) {
         ? `${format.height}p`
         : format.format_note || 'Unknown';
 
+      const formatPayload = context.parsedJson && context.sourcePageUrl
+        ? createFormatPayload(format, context.parsedJson, context.sourcePageUrl)
+        : null;
+
       return {
-        formatId: format.format_id,
+        formatId: String(format.format_id),
         resolution,
         ext: format.ext,
         type: isAudioOnly ? 'audio' : 'video',
         note: format.format_note || format.format || '',
+        fileSize: getFileSize(format),
+        mimeType: inferMimeType(format.ext, format),
+        hasAudio: Boolean(hasAudio),
+        hasVideo: Boolean(hasVideo),
+        formatToken: formatPayload ? signFormatToken(formatPayload) : undefined,
       };
     });
 }
 
-function normalizeSubtitles(subtitles = {}) {
-  return Object.keys(subtitles).sort((a, b) => a.localeCompare(b));
+function normalizeSubtitles(subtitles = {}, title = 'subtitle') {
+  return Object.keys(subtitles)
+    .sort((a, b) => a.localeCompare(b))
+    .map((lang) => {
+      const entries = Array.isArray(subtitles[lang]) ? subtitles[lang] : [];
+      const directEntry = entries.find((entry) => isHttpUrl(entry?.url));
+
+      if (!directEntry) {
+        return null;
+      }
+
+      const ext = directEntry.ext || 'vtt';
+      return {
+        lang,
+        ext,
+        url: directEntry.url,
+        fileName: sanitizeFileName(`${title}-${lang}.${ext}`),
+      };
+    })
+    .filter(Boolean);
 }
 
-function createTemporarySubtitlePrefix() {
-  return `subtitle-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+function sanitizeFileName(value, fallback = 'download') {
+  const baseName = String(value || fallback)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, 180);
+
+  return baseName || fallback;
 }
 
-function isSubtitleFile(fileName, prefix) {
-  if (!fileName.startsWith(prefix)) {
-    return false;
+function buildFileName(title, ext) {
+  const safeTitle = sanitizeFileName(title || 'download');
+  const safeExt = String(ext || 'bin').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin';
+
+  if (safeTitle.toLowerCase().endsWith(`.${safeExt}`)) {
+    return safeTitle;
   }
 
-  const validExtensions = ['.vtt', '.srt', '.ass', '.lrc', '.ttml', '.sbv'];
-  return validExtensions.some((extension) => fileName.endsWith(extension));
+  return `${safeTitle}.${safeExt}`;
 }
 
-/**
- * Checks for yt-dlp binary and downloads it if not found.
- * Initializes the ytDlpWrap instance.
- */
+function inferMimeType(ext, format = {}) {
+  if (typeof format.mime_type === 'string' && format.mime_type) {
+    return format.mime_type.split(';')[0].trim();
+  }
+
+  const normalizedExt = String(ext || '').toLowerCase();
+  const mimeByExt = {
+    mp4: 'video/mp4',
+    m4v: 'video/mp4',
+    webm: 'video/webm',
+    mkv: 'video/x-matroska',
+    mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    opus: 'audio/ogg',
+    ogg: 'audio/ogg',
+    wav: 'audio/wav',
+  };
+
+  return mimeByExt[normalizedExt] || 'application/octet-stream';
+}
+
+function filterProxyHeaders(headers = {}) {
+  return Object.entries(headers).reduce((accumulator, [name, value]) => {
+    const normalizedName = name.toLowerCase();
+
+    if (HOP_BY_HOP_HEADERS.has(normalizedName)) {
+      return accumulator;
+    }
+
+    if (typeof value === 'string' && value) {
+      accumulator[name] = value;
+    }
+
+    return accumulator;
+  }, {});
+}
+
+function getUrlOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch (error) {
+    return null;
+  }
+}
+
+function getPlatformOrigin(sourcePageUrl, sourceUrl) {
+  const sourcePageOrigin = getUrlOrigin(sourcePageUrl);
+
+  if (sourcePageOrigin) {
+    return sourcePageOrigin;
+  }
+
+  try {
+    const hostname = new URL(sourceUrl).hostname.toLowerCase();
+
+    if (hostname.includes('tiktok')) {
+      return 'https://www.tiktok.com';
+    }
+
+    if (hostname.includes('instagram')) {
+      return 'https://www.instagram.com';
+    }
+
+    if (hostname.includes('facebook') || hostname.includes('fbcdn')) {
+      return 'https://www.facebook.com';
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+}
+
+function buildProxyHeaders(sourceUrl, sourcePageUrl, headers = {}) {
+  const platformOrigin = getPlatformOrigin(sourcePageUrl, sourceUrl);
+  const normalizedHeaders = filterProxyHeaders(headers);
+  const proxyHeaders = {
+    'User-Agent': DEFAULT_BROWSER_USER_AGENT,
+    Accept: '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    ...normalizedHeaders,
+  };
+
+  if (platformOrigin) {
+    proxyHeaders.Origin = proxyHeaders.Origin || platformOrigin;
+    proxyHeaders.Referer = proxyHeaders.Referer || `${platformOrigin}/`;
+  }
+
+  delete proxyHeaders.Range;
+  delete proxyHeaders.range;
+
+  return proxyHeaders;
+}
+
+function createChunks(sizeBytes, chunkSizeBytes = DEFAULT_CHUNK_SIZE_BYTES) {
+  const size = toPositiveInteger(sizeBytes);
+  const chunkSize = toPositiveInteger(chunkSizeBytes) || DEFAULT_CHUNK_SIZE_BYTES;
+
+  if (!size) {
+    return [];
+  }
+
+  const chunks = [];
+  for (let start = 0, index = 0; start < size; start += chunkSize, index += 1) {
+    chunks.push({
+      index,
+      start,
+      end: Math.min(start + chunkSize - 1, size - 1),
+    });
+  }
+
+  return chunks;
+}
+
+function validateChunkRange(payload, start, end) {
+  const normalizedStart = Number(start);
+  const normalizedEnd = Number(end);
+  const sizeBytes = toPositiveInteger(payload?.sizeBytes);
+  const maxChunkSize = toPositiveInteger(payload?.chunkSizeBytes) || DEFAULT_CHUNK_SIZE_BYTES;
+
+  if (
+    !Number.isInteger(normalizedStart) ||
+    !Number.isInteger(normalizedEnd) ||
+    !sizeBytes ||
+    normalizedStart < 0 ||
+    normalizedEnd < normalizedStart ||
+    normalizedEnd >= sizeBytes ||
+    normalizedEnd - normalizedStart + 1 > maxChunkSize
+  ) {
+    throw createHttpError('Invalid chunk range.', 400, 'INVALID_RANGE');
+  }
+
+  return {
+    start: normalizedStart,
+    end: normalizedEnd,
+  };
+}
+
+async function probeSource(sourceUrl, headers) {
+  try {
+    const response = await fetch(sourceUrl, {
+      method: 'HEAD',
+      headers,
+      redirect: 'follow',
+    });
+
+    if (!response.ok) {
+      return { sizeBytes: null, supportsRange: false };
+    }
+
+    const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+    const acceptRanges = response.headers.get('accept-ranges') || '';
+
+    return {
+      sizeBytes: Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null,
+      supportsRange: /\bbytes\b/i.test(acceptRanges),
+    };
+  } catch (error) {
+    logger.warn(error, 'Unable to probe direct media URL with HEAD.');
+    return { sizeBytes: null, supportsRange: false };
+  }
+}
+
+function mapUpstreamStatus(status) {
+  if ([401, 403, 404, 410, 416].includes(status)) {
+    throw createHttpError('Upstream media URL expired or was blocked.', 409, 'SOURCE_EXPIRED_OR_BLOCKED');
+  }
+
+  throw createHttpError('Failed to fetch media chunk from upstream CDN.', 502, 'UPSTREAM_FAILURE');
+}
+
+function buildChunkResponseHeaders(upstreamResponse, payload, start, end) {
+  const contentLength = upstreamResponse.headers.get('content-length')
+    || String(end - start + 1);
+  const contentType = upstreamResponse.headers.get('content-type')
+    || payload.mimeType
+    || 'application/octet-stream';
+  const contentRange = upstreamResponse.headers.get('content-range')
+    || `bytes ${start}-${end}/${payload.sizeBytes}`;
+
+  return {
+    'Content-Type': contentType,
+    'Content-Length': contentLength,
+    'Content-Range': contentRange,
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+  };
+}
+
+async function fetchRawVideoInfo(url) {
+  ensureYtDlp();
+
+  logger.info(`[yt-dlp] Fetching metadata for: ${url}`);
+  try {
+    const rawJson = await ytDlpWrap.execPromise(['--dump-json', '--no-playlist', url]);
+    return parseYtDlpJson(rawJson);
+  } catch (error) {
+    const message = String(error?.message || '');
+    const code = /403|Forbidden/i.test(message)
+      ? 'EXTRACTOR_FORBIDDEN'
+      : 'EXTRACTOR_FAILED';
+    const wrappedError = createHttpError(
+      code === 'EXTRACTOR_FORBIDDEN'
+        ? 'TikTok rejected metadata extraction for this URL.'
+        : 'Unable to extract video metadata.',
+      502,
+      code
+    );
+    wrappedError.cause = error;
+    throw wrappedError;
+  }
+}
+
+async function fetchVideoInfo(url) {
+  const parsedJson = await fetchRawVideoInfo(url);
+  const durationSeconds = typeof parsedJson.duration === 'number' ? parsedJson.duration : null;
+
+  return {
+    title: parsedJson.title || 'Untitled video',
+    thumbnail: parsedJson.thumbnail || null,
+    duration: durationSeconds,
+    durationFormatted: formatDuration(durationSeconds),
+    formats: normalizeFormats(parsedJson.formats, { parsedJson, sourcePageUrl: url }),
+    subtitles: normalizeSubtitles(parsedJson.subtitles, parsedJson.title),
+  };
+}
+
+async function createFormatPayloadFromExtractor(url, formatId) {
+  const parsedJson = await fetchRawVideoInfo(url);
+  const selectedFormat = (parsedJson.formats || []).find(
+    (format) => String(format?.format_id) === String(formatId)
+  );
+
+  if (!selectedFormat || !isDirectHttpFormat(selectedFormat)) {
+    throw createHttpError(
+      'Selected format is not available as a direct single-file download.',
+      400,
+      'FORMAT_NOT_AVAILABLE'
+    );
+  }
+
+  return createFormatPayload(selectedFormat, parsedJson, url);
+}
+
+async function createDownloadManifest(url, formatId, formatToken) {
+  const formatPayload = formatToken
+    ? verifyFormatToken(formatToken)
+    : await createFormatPayloadFromExtractor(url, formatId);
+
+  if (String(formatPayload.formatId) !== String(formatId)) {
+    throw createHttpError('Format token does not match selected format.', 400, 'FORMAT_NOT_AVAILABLE');
+  }
+
+  const probed = formatPayload.sizeBytes
+    ? { sizeBytes: null, supportsRange: true }
+    : await probeSource(formatPayload.sourceUrl, formatPayload.headers);
+  const sizeBytes = toPositiveInteger(formatPayload.sizeBytes) ?? probed.sizeBytes;
+
+  if (!sizeBytes) {
+    throw createHttpError(
+      'Selected format does not expose a file size for chunking.',
+      502,
+      'SIZE_UNAVAILABLE'
+    );
+  }
+
+  const chunkSizeBytes = toPositiveInteger(formatPayload.chunkSizeBytes) || DEFAULT_CHUNK_SIZE_BYTES;
+  const chunks = createChunks(sizeBytes, chunkSizeBytes);
+  const tokenPayload = {
+    sourceUrl: formatPayload.sourceUrl,
+    sourcePageUrl: formatPayload.sourcePageUrl || url,
+    headers: formatPayload.headers || {},
+    formatId: String(formatPayload.formatId),
+    fileName: formatPayload.fileName,
+    mimeType: formatPayload.mimeType,
+    sizeBytes,
+    chunkSizeBytes,
+  };
+  const downloadToken = signDownloadToken(tokenPayload);
+  const verifiedPayload = verifyDownloadToken(downloadToken);
+
+  return {
+    runtimeVersion: RUNTIME_VERSION,
+    delivery: 'proxy',
+    title: formatPayload.title || 'Untitled video',
+    fileName: formatPayload.fileName,
+    mimeType: formatPayload.mimeType,
+    sizeBytes,
+    chunkSizeBytes,
+    chunkEndpoint: CHUNK_ENDPOINT,
+    downloadToken,
+    expiresAt: new Date(verifiedPayload.expiresAt).toISOString(),
+    supportsRange: probed.supportsRange || Boolean(formatPayload.sizeBytes) || chunks.length === 1,
+    chunks,
+  };
+}
+
+async function fetchProxyChunk(token, start, end) {
+  const payload = verifyDownloadToken(token);
+  const range = validateChunkRange(payload, start, end);
+  const upstreamHeaders = {
+    ...buildProxyHeaders(payload.sourceUrl, payload.sourcePageUrl, payload.headers),
+    Range: `bytes=${range.start}-${range.end}`,
+  };
+
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(payload.sourceUrl, {
+      method: 'GET',
+      headers: upstreamHeaders,
+      redirect: 'follow',
+    });
+  } catch (error) {
+    logger.warn(error, 'Unable to fetch upstream media chunk.');
+    throw createHttpError('Failed to fetch media chunk from upstream CDN.', 502, 'UPSTREAM_FAILURE');
+  }
+
+  const fullSingleChunk = range.start === 0 && range.end + 1 >= payload.sizeBytes;
+  const validStatus = upstreamResponse.status === 206
+    || (fullSingleChunk && upstreamResponse.status === 200);
+
+  if (!validStatus) {
+    mapUpstreamStatus(upstreamResponse.status);
+  }
+
+  return {
+    statusCode: upstreamResponse.status === 206 ? 206 : 200,
+    headers: buildChunkResponseHeaders(upstreamResponse, payload, range.start, range.end),
+    body: upstreamResponse.body,
+  };
+}
+
+function createYtDlpStreamArgs(url, formatId) {
+  return ['-f', String(formatId), '--no-playlist', '-o', '-', url];
+}
+
+function getYtDlpStream(args) {
+  if (ytDlpStreamFactory) {
+    return ytDlpStreamFactory(args);
+  }
+
+  ensureYtDlp();
+  return ytDlpWrap.execStream(args);
+}
+
+function setYtDlpStreamFactoryForTests(factory) {
+  const previousFactory = ytDlpStreamFactory;
+  ytDlpStreamFactory = factory;
+
+  return () => {
+    ytDlpStreamFactory = previousFactory;
+  };
+}
+
+function createStreamFallback(formatToken, url, formatId) {
+  const formatPayload = formatToken
+    ? verifyFormatToken(formatToken)
+    : null;
+  const resolvedUrl = formatPayload?.sourcePageUrl || url;
+  const resolvedFormatId = formatPayload?.formatId || formatId;
+
+  if (!resolvedUrl || !resolvedFormatId) {
+    throw createHttpError('A valid URL and formatId are required for stream fallback.', 400, 'STREAM_INPUT_INVALID');
+  }
+
+  if (formatPayload && String(formatPayload.formatId) !== String(formatId)) {
+    throw createHttpError('Format token does not match selected format.', 400, 'FORMAT_NOT_AVAILABLE');
+  }
+
+  const stream = getYtDlpStream(createYtDlpStreamArgs(resolvedUrl, resolvedFormatId));
+
+  return {
+    fileName: formatPayload?.fileName || 'download.mp4',
+    mimeType: formatPayload?.mimeType || 'application/octet-stream',
+    stream,
+  };
+}
+
 export async function initialize() {
   if (!fs.existsSync(binaryPath)) {
     logger.info(`Downloading yt-dlp binary to: ${binaryPath}`);
@@ -185,362 +737,37 @@ export async function initialize() {
       logger.info('yt-dlp binary downloaded successfully.');
     } catch (error) {
       logger.error(error, 'Failed to download yt-dlp binary.');
-      throw error; // Throw error to prevent server from starting without it
+      throw error;
     }
   } else {
     logger.info('yt-dlp binary already exists.');
   }
-  // Initialize YTDlpWrap with the binary path
+
   ytDlpWrap = new YTDlpWrap(binaryPath);
-  await ensureTempDirectory();
 }
 
-/**
- * Retrieve metadata for a given video URL using yt-dlp.
- *
- * @param {string} url
- * @returns {Promise<object>}
- */
-async function fetchVideoInfo(url) {
-  ensureYtDlp();
-
-  try {
-    const cacheKey = url;
-    const cachedInfo = videoInfoCache.get(cacheKey);
-
-    if (cachedInfo) {
-      console.log(`[cache] hit for ${cacheKey}`);
-      return cachedInfo;
-    }
-
-    console.log(`[cache] miss for ${cacheKey}`);
-    logger.info(`[yt-dlp] Fetching metadata for: ${url}`);
-    const rawJson = await ytDlpWrap.execPromise([url, '--dump-json']);
-    const parsedJson = rawJson
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => JSON.parse(line))[0];
-
-    if (!parsedJson) {
-      throw new Error('Unable to parse video metadata.');
-    }
-
-    const durationSeconds = typeof parsedJson.duration === 'number' ? parsedJson.duration : null;
-
-    const normalizedInfo = {
-      title: parsedJson.title || 'Untitled video',
-      thumbnail: parsedJson.thumbnail || null,
-      duration: durationSeconds,
-      durationFormatted: formatDuration(durationSeconds),
-      formats: normalizeFormats(parsedJson.formats),
-      subtitles: normalizeSubtitles(parsedJson.subtitles),
-    };
-
-    videoInfoCache.set(cacheKey, normalizedInfo);
-
-    return normalizedInfo;
-  } catch (error) {
-    logger.error(error, `[yt-dlp] Error fetching metadata for ${url}`);
-    throw error;
-  }
-}
-
-function createDownloadRecord(downloadId, url, formatId) {
-  const now = new Date().toISOString();
-  const record = {
-    id: downloadId,
-    url,
-    formatId,
-    status: 'queued',
-    error: null,
-    filePath: null,
-    fileName: null,
-    createdAt: now,
-    updatedAt: now,
-    progress: {
-      percent: 0,
-      totalSize: null,
-      currentSpeed: null,
-      eta: null,
-      downloaded: null,
-      statusText: 'queued',
-    },
-  };
-
-  activeDownloads.set(downloadId, record);
-  return record;
-}
-
-function attachDownloadListeners(downloadId, process, { resolve, reject }) {
-  process.on('progress', (progress) => {
-    updateDownloadRecord(downloadId, { status: 'downloading' });
-    updateDownloadProgress(downloadId, {
-      percent: sanitizePercent(progress?.percent),
-      totalSize: progress?.totalSize ?? null,
-      currentSpeed: progress?.currentSpeed ?? null,
-      eta: progress?.eta ?? null,
-      downloaded: progress?.downloaded ?? null,
-      statusText: progress?.status ?? progress?.state ?? 'downloading',
-    });
-
-    if (progress?.filename) {
-      updateDownloadRecord(downloadId, { fileName: path.basename(progress.filename) });
-    }
-  });
-
-  process.once('error', (error) => {
-    logger.error(error, `yt-dlp process emitted an error for ${downloadId}`);
-    updateDownloadRecord(downloadId, {
-      status: 'error',
-      error: error?.message || 'Download process failed unexpectedly.',
-    });
-    reject(error);
-  });
-
-  process.once('close', async (code) => {
-    if (code === 0) {
-      try {
-        await finalizeSuccessfulDownload(downloadId);
-        const record = activeDownloads.get(downloadId);
-        if (record?.status === 'completed') {
-          resolve();
-          return;
-        }
-
-        const error = new Error(record?.error || 'Download finalization failed.');
-        reject(error);
-      } catch (error) {
-        logger.error(error, `Failed to finalize download ${downloadId}`);
-        reject(error);
-      }
-      return;
-    }
-
-    const message = `Download process exited with code ${code}.`;
-    logger.error(message, { downloadId });
-    updateDownloadRecord(downloadId, {
-      status: 'error',
-      error: message,
-    });
-    reject(new Error(message));
-  });
-}
-
-async function queueDownload(downloadId, url, formatId) {
-  ensureYtDlp();
-  await ensureTempDirectory();
-
-  const trimmedUrl = typeof url === 'string' ? url.trim() : url;
-  const trimmedFormatId = typeof formatId === 'string' ? formatId.trim() : formatId;
-
-  const record = createDownloadRecord(downloadId, trimmedUrl, trimmedFormatId);
-  updateDownloadProgress(downloadId, { statusText: 'queued', percent: 0, eta: null });
-
-  try {
-    await downloadQueue.add('download-video', {
-      downloadId,
-      url: trimmedUrl,
-      formatId: trimmedFormatId,
-    });
-    updateDownloadRecord(downloadId, { status: 'queued' });
-  } catch (error) {
-    logger.error(error, `Failed to queue download job for ${downloadId}`);
-    updateDownloadRecord(downloadId, {
-      status: 'error',
-      error: 'Failed to queue the download job. Please try again later.',
-    });
-    updateDownloadProgress(downloadId, { statusText: 'error' });
-    throw error;
-  }
-
-  return record;
-}
-
-async function processDownloadJob(downloadId, url, formatId) {
-  ensureYtDlp();
-  await ensureTempDirectory();
-
-  const trimmedUrl = typeof url === 'string' ? url.trim() : url;
-  const trimmedFormatId = typeof formatId === 'string' ? formatId.trim() : formatId;
-
-  if (!activeDownloads.has(downloadId)) {
-    createDownloadRecord(downloadId, trimmedUrl, trimmedFormatId);
-  }
-
-  updateDownloadRecord(downloadId, {
-    url: trimmedUrl,
-    formatId: trimmedFormatId,
-    status: 'starting',
-    error: null,
-  });
-  updateDownloadProgress(downloadId, { statusText: 'starting', percent: 0, eta: null });
-
-  return new Promise((resolve, reject) => {
-    try {
-      const outputTemplate = path.join(tempDirectory, `${downloadId}.%(ext)s`);
-      logger.info(
-        `[yt-dlp] Starting download for ${trimmedUrl} (format: ${trimmedFormatId}) -> ${outputTemplate}`
-      );
-
-      const args = [
-        '-f',
-        trimmedFormatId,
-        '-o',
-        outputTemplate,
-        '--no-part',
-        '--newline',
-        trimmedUrl,
-      ];
-
-      const ytProcess = ytDlpWrap.exec(args);
-      attachDownloadListeners(downloadId, ytProcess, { resolve, reject });
-    } catch (error) {
-      logger.error(error, `Failed to spawn yt-dlp for ${trimmedUrl} (${trimmedFormatId})`);
-      updateDownloadRecord(downloadId, {
-        status: 'error',
-        error: error?.message || 'Failed to start download process.',
-      });
-      reject(error);
-    }
-  });
-}
-
-function getDownloadSnapshot(downloadId) {
-  const record = activeDownloads.get(downloadId);
-  if (!record) {
-    return null;
-  }
-
-  const { progress, ...rest } = record;
-  return {
-    ...rest,
-    progress: { ...progress },
-  };
-}
-
-function getDownloadFileInfo(downloadId) {
-  const record = activeDownloads.get(downloadId);
-  if (!record || !record.filePath) {
-    return null;
-  }
-
-  return {
-    filePath: record.filePath,
-    fileName: record.fileName ?? path.basename(record.filePath),
-  };
-}
-
-async function cleanupDownload(downloadId) {
-  const record = activeDownloads.get(downloadId);
-  if (!record) {
-    return;
-  }
-
-  if (record.filePath) {
-    try {
-      await fsPromises.unlink(record.filePath);
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        logger.error(error, `Failed to delete temporary file for ${downloadId}`);
-      }
-    }
-  }
-
-  activeDownloads.delete(downloadId);
-}
-
-async function downloadSubtitleFile(url, lang) {
-  ensureYtDlp();
-  await ensureTempDirectory();
-
-  const trimmedUrl = typeof url === 'string' ? url.trim() : '';
-  const trimmedLang = typeof lang === 'string' ? lang.trim() : '';
-
-  if (!trimmedUrl) {
-    const error = new Error('A valid video URL is required.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (!trimmedLang) {
-    const error = new Error('A subtitle language code is required.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const prefix = createTemporarySubtitlePrefix();
-  const outputTemplate = path.join(tempDirectory, `${prefix}.%(ext)s`);
-
-  try {
-    await ytDlpWrap.execPromise([
-      trimmedUrl,
-      '--skip-download',
-      '--write-subs',
-      '--sub-lang',
-      trimmedLang,
-      '--sub-format',
-      'best',
-      '-o',
-      outputTemplate,
-    ]);
-  } catch (error) {
-    logger.error(error, `[yt-dlp] Failed subtitle download for ${trimmedUrl} (${trimmedLang})`);
-    const wrappedError = new Error('Failed to download the requested subtitle.');
-    wrappedError.statusCode = 502;
-    wrappedError.cause = error;
-    throw wrappedError;
-  }
-
-  try {
-    const entries = await fsPromises.readdir(tempDirectory);
-    const match = entries.find((file) => isSubtitleFile(file, prefix));
-
-    if (!match) {
-      const notFoundError = new Error('Subtitle not available for the requested language.');
-      notFoundError.statusCode = 404;
-      throw notFoundError;
-    }
-
-    const filePath = path.join(tempDirectory, match);
-    return {
-      filePath,
-      fileName: match,
-    };
-  } catch (error) {
-    if (!error.statusCode) {
-      logger.error(error, 'Unable to locate downloaded subtitle file.');
-      const wrappedError = new Error('Subtitle not available for the requested language.');
-      wrappedError.statusCode = 404;
-      wrappedError.cause = error;
-      throw wrappedError;
-    }
-
-    throw error;
-  }
-}
-
-async function deleteTemporaryFile(filePath) {
-  if (!filePath) {
-    return;
-  }
-
-  try {
-    await fsPromises.unlink(filePath);
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      logger.error(error, `Failed to delete temporary subtitle file: ${filePath}`);
-    }
-  }
-}
+export {
+  DEFAULT_CHUNK_SIZE_BYTES,
+  DOWNLOAD_TOKEN_TTL_MS,
+  RUNTIME_VERSION,
+  createChunks,
+  createFormatPayload,
+  createYtDlpStreamArgs,
+  filterProxyHeaders,
+  buildProxyHeaders,
+  normalizeFormats,
+  sanitizeFileName,
+  signDownloadToken,
+  signFormatToken,
+  setYtDlpStreamFactoryForTests,
+  validateChunkRange,
+  verifyDownloadToken,
+  verifyFormatToken,
+};
 
 export const downloadService = {
   fetchVideoInfo,
-  queueDownload,
-  processDownloadJob,
-  getDownloadSnapshot,
-  getDownloadFileInfo,
-  cleanupDownload,
-  downloadSubtitleFile,
-  deleteTemporaryFile,
+  createDownloadManifest,
+  fetchProxyChunk,
+  createStreamFallback,
 };
